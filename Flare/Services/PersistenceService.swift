@@ -112,7 +112,7 @@ actor PersistenceService {
 
 // MARK: - Debug files location
 extension PersistenceService {
-    func getDataDirectoryPath() -> String {
+    nonisolated func getDataDirectoryPath() -> String {
         return appSupportURL.path
     }
     

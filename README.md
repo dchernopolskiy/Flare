@@ -1,12 +1,8 @@
-(Not so) Extremely simple (anymore) job posting monitoring tool for Microsoft (TikTok, Greenhouse, Ashbyhq). 
-Displays jobs from the https://careers.microsoft.com/ for the past 24 hours, sends a notification when a new job posting is created.
-Search is performed using the job title and location.
-New updates allows you to paste any greenhouse board that you want to monitor and query for the new jobs, as well as scrapes LifeAtTiktok positions.
-Jobvite is in progress, Apple and Meta are, unfortunately, out of question for now, ashbyhq is currently being tested.
+(Not so) Extremely simple (anymore) job posting monitoring tool for Microsoft (now also TikTok, Snap, Meta). Displays jobs from the https://careers.microsoft.com/ for the past 24 hours, sends a notification when a new job posting is created. New update now allows you to paste a careers page link, automatically scan the site and detect the ATS that the company uses, adding it to the list of job sources to scan. Greenhouse, Ashby, Lever, Workday ATS boards are fully supported. V1 also brings in the functionality to properly scrape Meta's GraphQL api and had been tested successfully so far. Search is performed using the job title and location.
 
 Current backlog: implement more ATS boards, address some performance issues, unify addition of new fetchers (so I don't have to add a new fetcher in 15 different places), but other than that it performs exactly what I needed for myself.
 
-Compile in xcode and run. Bundled version may or may not be coming in the future. 
+Bundle version is coming out as soon as the auto updater is properly tested.
 
 <p align="center">
 <img width="1722" height="1047" alt="image" src="https://github.com/user-attachments/assets/534c9e5c-5dab-4a6e-a742-d111f1d4ed44" />

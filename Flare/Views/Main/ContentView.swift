@@ -17,6 +17,8 @@ struct ContentView: View {
     @EnvironmentObject var boardMonitor: JobBoardMonitor
     @State private var sidebarVisible = true
     @State private var windowSize: CGSize = .zero
+    @State private var showToast = false
+    @State private var toastMessage = ""
     
     private var isWindowMinimized: Bool {
         windowSize.width < 800
@@ -87,7 +89,7 @@ struct ContentView: View {
                     sidebarVisible = false
                 }
             }
-            .onChange(of: geometry.size) { newSize in
+            .onChange(of: geometry.size) { oldValue, newSize in
                 let wasMinimized = isWindowMinimized
                 windowSize = newSize
                 
@@ -103,6 +105,33 @@ struct ContentView: View {
                     }
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ShowToast"))) { notification in
+                if let message = notification.object as? String {
+                    // Show toast overlay
+                    withAnimation {
+                        toastMessage = message
+                        showToast = true
+                    }
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        withAnimation {
+                            showToast = false
+                        }
+                    }
+                }
+            }
+            .overlay(
+                Group {
+                    if showToast {
+                        VStack {
+                            ToastView(message: toastMessage)
+                                .padding()
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                            Spacer()
+                        }
+                    }
+                }
+            )
         }
         .frame(minWidth: 400, minHeight: 400)
     }

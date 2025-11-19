@@ -7,24 +7,20 @@
 
 import Foundation
 
-actor WorkdayFetcher: JobFetcherProtocol {
-    
+actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
+
     private var locationCache: [String: [WorkdayLocation]] = [:]
     private var sessionCache: [String: WorkdaySession] = [:]
-    
-    private struct JobTrackingData: Codable {
-        let id: String
-        let firstSeenDate: Date
-    }
-    
+    private let trackingService = JobTrackingService.shared
+
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
         return []
     }
-    
+
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let config = try extractWorkdayConfig(from: url)
         do {
-            let storedJobDates = await loadJobTrackingData(company: config.company)
+            let storedJobDates = await trackingService.loadTrackingData(for: "workday_\(config.company)")
             let currentDate = Date()
             let session = try await establishSession(config: config, originalURL: url)
             let initialResponse = try await fetchJobsPage(
@@ -57,12 +53,12 @@ actor WorkdayFetcher: JobFetcherProtocol {
                         count: facetValue.count
                     )
                 }
-                print("🔵 [Workday] ✅ Cached \(locationCache[config.cacheKey]?.count ?? 0) locations for \(config.company)")
+                print("[Workday] Cached \(locationCache[config.cacheKey]?.count ?? 0) locations for \(config.company)")
             } else {
-                print("🔵 [Workday] ℹ️ No location facets found for \(config.company)")
+                print("[Workday] No location facets found for \(config.company)")
             }
         } else {
-            print("🔵 [Workday] ℹ️ \(config.company) doesn't return facets - will use client-side filtering")
+            print(" [Workday] \(config.company) doesn't return facets - will use client-side filtering")
         }
         
         let locationIds = extractLocationIds(
@@ -102,7 +98,7 @@ actor WorkdayFetcher: JobFetcherProtocol {
             }
             
             offset += limit
-            try await Task.sleep(nanoseconds: 500_000_000)
+            try await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
         
         let shouldApplyLocationFilter = locationIds.isEmpty && !locationFilter.isEmpty
@@ -118,14 +114,14 @@ actor WorkdayFetcher: JobFetcherProtocol {
         } else {
             filteredJobs = allJobs
         }
-        
-            await saveJobTrackingData(filteredJobs, company: config.company, currentDate: currentDate)
+
+            await trackingService.saveTrackingData(filteredJobs, for: "workday_\(config.company)", currentDate: currentDate, retentionDays: 30)
             return filteredJobs
         } catch {
-            print("🔵 [Workday] ❌ Error in fetchJobs: \(error)")
-            print("🔵 [Workday] ❌ Error type: \(type(of: error))")
+            print("[Workday] Error in fetchJobs: \(error)")
+            print("[Workday] Error type: \(type(of: error))")
             if let localizedError = error as? LocalizedError {
-                print("🔵 [Workday] ❌ Description: \(localizedError.errorDescription ?? "none")")
+                print("[Workday] Description: \(localizedError.errorDescription ?? "none")")
             }
             throw error
         }
@@ -149,7 +145,7 @@ actor WorkdayFetcher: JobFetcherProtocol {
         
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
-            print("🔵 [Workday] ❌ Invalid session response")
+            print("[Workday] Invalid session response")
             throw FetchError.invalidResponse
         }
         
@@ -239,13 +235,13 @@ actor WorkdayFetcher: JobFetcherProtocol {
         let (data, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            print("🔵 [Workday] ❌ Invalid response object")
+            print("[Workday] Invalid response object")
             throw FetchError.invalidResponse
         }
         
         guard httpResponse.statusCode == 200 else {
             if let errorString = String(data: data, encoding: .utf8) {
-                print("🔵 [Workday] ❌ Error response body: \(errorString.prefix(200))")
+                print("[Workday] Error response body: \(errorString.prefix(200))")
             }
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
@@ -254,18 +250,18 @@ actor WorkdayFetcher: JobFetcherProtocol {
             let decoded = try JSONDecoder().decode(WorkdayResponse.self, from: data)
             return decoded
         } catch let DecodingError.keyNotFound(key, context) {
-            print("🔵 [Workday] ❌ Missing key '\(key.stringValue)' at path: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
+            print("[Workday] Missing key '\(key.stringValue)' at path: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🔵 [Workday] Response preview: \(responseString.prefix(500))")
+                print("[Workday] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Workday response")
         } catch let DecodingError.typeMismatch(type, context) {
-            print("🔵 [Workday] ❌ Type mismatch for \(type) at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
+            print("[Workday] Type mismatch for \(type) at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
             throw FetchError.decodingError(details: "Type mismatch in Workday response")
         } catch {
-            print("🔵 [Workday] ❌ JSON decode error: \(error)")
+            print("[Workday] JSON decode error: \(error)")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🔵 [Workday] Response preview: \(responseString.prefix(500))")
+                print("[Workday] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Failed to decode Workday response: \(error.localizedDescription)")
         }
@@ -273,12 +269,12 @@ actor WorkdayFetcher: JobFetcherProtocol {
     
     private func convertWorkdayJob(_ workdayJob: WorkdayJobPosting, config: WorkdayConfig, storedJobDates: [String: Date], currentDate: Date) -> Job? {
         guard !workdayJob.title.isEmpty else {
-            print("🔵 [Workday] ⚠️ Skipping job: empty title")
+            print("[Workday] Skipping job: empty title")
             return nil
         }
         
         guard !workdayJob.externalPath.isEmpty else {
-            print("🔵 [Workday] ⚠️ Skipping job '\(workdayJob.title)': empty external path")
+            print("[Workday] Skipping job '\(workdayJob.title)': empty external path")
             return nil
         }
         
@@ -311,7 +307,9 @@ actor WorkdayFetcher: JobFetcherProtocol {
                 .joined(separator: " "),
             department: nil,
             category: workdayJob.bulletFields.count > 1 ? workdayJob.bulletFields[1] : nil,
-            firstSeenDate: firstSeenDate
+            firstSeenDate: firstSeenDate,
+            originalPostingDate: nil,
+            wasBumped: false
         )
     }
     
@@ -414,51 +412,6 @@ actor WorkdayFetcher: JobFetcherProtocol {
             .filter { !$0.isEmpty }
     }
     
-    // MARK: - Persistence with proper date tracking
-    
-    private func loadJobTrackingData(company: String) async -> [String: Date] {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("workday_\(company)_tracking.json")
-        
-        do {
-            let data = try Data(contentsOf: url)
-            let trackingData = try JSONDecoder().decode([JobTrackingData].self, from: data)
-            
-            var dict: [String: Date] = [:]
-            for item in trackingData {
-                dict[item.id] = item.firstSeenDate
-            }
-            
-            return dict
-        } catch {
-            return [:]
-        }
-    }
-    
-    private func saveJobTrackingData(_ jobs: [Job], company: String, currentDate: Date) async {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("workday_\(company)_tracking.json")
-        
-        do {
-            var existingData = await loadJobTrackingData(company: company)
-            for job in jobs {
-                if existingData[job.id] == nil {
-                    existingData[job.id] = currentDate
-                }
-            }
-            
-            let trackingData = existingData.map { JobTrackingData(id: $0.key, firstSeenDate: $0.value) }
-            let cutoffDate = Date().addingTimeInterval(-60 * 24 * 3600)
-            let recentData = trackingData.filter { $0.firstSeenDate > cutoffDate }
-            let data = try JSONEncoder().encode(recentData)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
-        } catch {
-            print("🔵 [Workday] Failed to save job tracking data: \(error)")
-        }
-    }
 }
 
 // MARK: - Workday Config

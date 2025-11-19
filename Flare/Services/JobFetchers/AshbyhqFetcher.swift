@@ -7,22 +7,18 @@
 
 import Foundation
 
-actor AshbyFetcher: JobFetcherProtocol {
-    
-    // Add tracking data structure
-    private struct JobTrackingData: Codable {
-        let id: String
-        let firstSeenDate: Date
-    }
-    
+actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
+
+    private let trackingService = JobTrackingService.shared
+
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
         return []
     }
-    
+
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let slug = extractAshbySlug(from: url)
-        
-        let storedJobDates = await loadJobTrackingData(company: slug)
+
+        let storedJobDates = await trackingService.loadTrackingData(for: "ashby_\(slug)")
         let currentDate = Date()
         
         let jobs = try await fetchJobsViaGraphQL(slug: slug)
@@ -74,63 +70,16 @@ actor AshbyFetcher: JobFetcherProtocol {
                 companyName: slug.capitalized,
                 department: nil,
                 category: nil,
-                firstSeenDate: firstSeenDate  // ✅ Use persisted date
+                firstSeenDate: firstSeenDate,
+                originalPostingDate: nil,
+                wasBumped: false
             )
         }
         
-        await saveJobTrackingData(filteredJobs, company: slug, currentDate: currentDate)
+        await trackingService.saveTrackingData(filteredJobs, for: "ashby_\(slug)", currentDate: currentDate, retentionDays: 30)
         return filteredJobs
     }
-    
-    // MARK: - Persistence Methods
-    
-    private func loadJobTrackingData(company: String) async -> [String: Date] {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("ashby_\(company)_tracking.json")
-        
-        do {
-            let data = try Data(contentsOf: url)
-            let trackingData = try JSONDecoder().decode([JobTrackingData].self, from: data)
-            
-            var dict: [String: Date] = [:]
-            for item in trackingData {
-                dict[item.id] = item.firstSeenDate
-            }
-            
-            return dict
-        } catch {
-            return [:]
-        }
-    }
-    
-    private func saveJobTrackingData(_ jobs: [Job], company: String, currentDate: Date) async {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("ashby_\(company)_tracking.json")
-        
-        do {
-            var existingData = await loadJobTrackingData(company: company)
-            
-            for job in jobs {
-                if existingData[job.id] == nil {
-                    existingData[job.id] = currentDate
-                }
-            }
-            
-            let trackingData = existingData.map { JobTrackingData(id: $0.key, firstSeenDate: $0.value) }
-            
-            let cutoffDate = Date().addingTimeInterval(-60 * 24 * 3600)
-            let recentData = trackingData.filter { $0.firstSeenDate > cutoffDate }
-            
-            let data = try JSONEncoder().encode(recentData)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
-        } catch {
-            print("🔶 [Ashby] Failed to save job tracking data: \(error)")
-        }
-    }
-    
+
     // MARK: - GraphQL API Call
     
     private func fetchJobsViaGraphQL(slug: String) async throws -> [AshbyJobPosting] {
@@ -182,14 +131,31 @@ actor AshbyFetcher: JobFetcherProtocol {
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
             throw FetchError.invalidResponse
         }
         
-        let decoded = try JSONDecoder().decode(AshbyGraphQLResponse.self, from: data)
+        guard httpResponse.statusCode == 200 else {
+            if let errorString = String(data: data, encoding: .utf8) {
+                print("[Ashby] HTTP \(httpResponse.statusCode) response: \(errorString.prefix(500))")
+            }
+            throw FetchError.httpError(statusCode: httpResponse.statusCode)
+        }
+        
+        let decoded: AshbyGraphQLResponse
+        do {
+            decoded = try JSONDecoder().decode(AshbyGraphQLResponse.self, from: data)
+        } catch {
+            if let responseString = String(data: data, encoding: .utf8) {
+                print("[Ashby] Decoding error: \(error)")
+                print("[Ashby] Response preview: \(responseString.prefix(500))")
+            }
+            throw FetchError.decodingError(details: "Failed to decode Ashby response: \(error.localizedDescription)")
+        }
         
         guard let jobPostings = decoded.data.jobBoard?.jobPostings else {
-            throw FetchError.decodingError(details: "Failed to decode Ashby response")
+            print("[Ashby] No job postings found in response")
+            throw FetchError.decodingError(details: "No job postings found in Ashby response")
         }
         
         return jobPostings

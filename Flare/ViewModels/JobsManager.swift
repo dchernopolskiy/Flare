@@ -11,12 +11,29 @@ import Combine
 import UserNotifications
 import AppKit
 
+// MARK: - Delay Configuration
+struct FetchDelayConfig {
+    static let batchProcessingDelay: UInt64 = 10_000_000 // 10ms
+    static let fetchPageDelay: UInt64 = 300_000_000 // 300ms
+    static let statusClearDelay: UInt64 = 5_000_000_000 // 5s
+    static let boardFetchDelay: UInt64 = 500_000_000 // 500ms
+}
+
 @MainActor
 class JobManager: ObservableObject {
     static let shared = JobManager()
-    
+
     // MARK: - Published Properties
-    @Published var allJobs: [Job] = []
+    @Published var allJobs: [Job] = [] {
+        didSet {
+            allJobsSorted = allJobs.sorted { job1, job2 in
+                let date1 = job1.postingDate ?? job1.firstSeenDate
+                let date2 = job2.postingDate ?? job2.firstSeenDate
+                return date1 > date2
+            }
+        }
+    }
+    private var allJobsSorted: [Job] = []
     @Published var isLoading = false
     @Published var loadingProgress = ""
     @Published var showSettings = false
@@ -27,18 +44,130 @@ class JobManager: ObservableObject {
     @Published var appliedJobIds: Set<String> = []
     @Published var fetchStatistics = FetchStatistics()
     @Published var starredJobIds: Set<String> = []
+    @Published private var cachedFilteredJobs: [Job] = []
+    @Published private var filterCache = FilterCache()
+    private var filterCancellable: AnyCancellable?
+    private var allJobsCancellable: AnyCancellable?
     
-    var jobs: [Job] {
-        return allJobs.filter { job in
-            if let postingDate = job.postingDate {
-                return Date().timeIntervalSince(postingDate) <= 86400
-            } else {
-                return Date().timeIntervalSince(job.firstSeenDate) <= 86400
+    
+    struct FilterCache {
+        var lastTitleFilter: String = ""
+        var lastLocationFilter: String = ""
+        var lastSourceFilter: Set<JobSource> = []
+        var cachedJobs: [Job] = []
+        var lastComputedDate: Date = Date()
+        var allJobsSnapshot: [Job] = []
+
+        func isValid(titleFilter: String, locationFilter: String, sources: Set<JobSource>, allJobs: [Job]) -> Bool {
+            return lastTitleFilter == titleFilter &&
+                   lastLocationFilter == locationFilter &&
+                   lastSourceFilter == sources &&
+                   allJobsSnapshot.count == allJobs.count &&
+                   Date().timeIntervalSince(lastComputedDate) < 5
+        }
+
+        mutating func invalidate() {
+            allJobsSnapshot = []
+        }
+    }
+    
+    func getFilteredJobs(
+        titleFilter: String = "",
+        locationFilter: String = "",
+        sourcesFilter: Set<JobSource> = [],
+        showStarred: Bool = false,
+        showApplied: Bool = false
+    ) -> [Job] {
+        if filterCache.isValid(titleFilter: titleFilter, locationFilter: locationFilter, sources: sourcesFilter, allJobs: allJobs) {
+            return applyStatusFilters(filterCache.cachedJobs, showStarred: showStarred, showApplied: showApplied)
+        }
+        
+        var filtered = allJobsSorted
+        filtered = filtered.filter { job in
+            if job.isBumpedRecently {
+                return true
             }
-        }.sorted { job1, job2 in
-            let date1 = job1.postingDate ?? job1.firstSeenDate
-            let date2 = job2.postingDate ?? job2.firstSeenDate
-            return date1 > date2
+            
+            if let postingDate = job.postingDate {
+                return Date().timeIntervalSince(postingDate) <= 172800 // 48 hours
+            } else {
+                return Date().timeIntervalSince(job.firstSeenDate) <= 172800
+            }
+        }
+        
+        // Title filter
+        if !titleFilter.isEmpty {
+            let keywords = titleFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            filtered = filtered.filter { job in
+                let jobTitle = job.title.lowercased()
+                return keywords.contains { keyword in
+                    jobTitle.contains(keyword)
+                }
+            }
+        }
+        
+        // Location filter
+        if !locationFilter.isEmpty {
+            let keywords = locationFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            filtered = filtered.filter { job in
+                let jobLocation = job.location.lowercased()
+                return keywords.contains { keyword in
+                    jobLocation.contains(keyword)
+                }
+            }
+        }
+        
+        // Source filter
+        if !sourcesFilter.isEmpty {
+            filtered = filtered.filter { job in
+                sourcesFilter.contains(job.source)
+            }
+        }
+
+        filterCache = FilterCache(
+            lastTitleFilter: titleFilter,
+            lastLocationFilter: locationFilter,
+            lastSourceFilter: sourcesFilter,
+            cachedJobs: filtered,
+            lastComputedDate: Date(),
+            allJobsSnapshot: allJobs
+        )
+        
+        return applyStatusFilters(filtered, showStarred: showStarred, showApplied: showApplied)
+    }
+    
+    private func applyStatusFilters(_ jobs: [Job], showStarred: Bool, showApplied: Bool) -> [Job] {
+        var result = jobs
+        
+        if showStarred {
+            result = result.filter { isJobStarred($0) }
+        }
+        
+        if showApplied {
+            result = result.filter { isJobApplied($0) }
+        }
+        
+        return result
+    }
+    
+    // MARK: - Batch Processing for Better Performance
+    
+    func processJobsBatched(_ newJobs: [Job]) async {
+        let batchSize = 50
+        let batches = stride(from: 0, to: newJobs.count, by: batchSize).map {
+            Array(newJobs[$0..<min($0 + batchSize, newJobs.count)])
+        }
+        
+        for (index, batch) in batches.enumerated() {
+            await MainActor.run {
+                loadingProgress = "Processing batch \(index + 1)/\(batches.count)"
+            }
+            
+            for job in batch {
+                storedJobIds.insert(job.id)
+            }
+            
+            try? await Task.sleep(nanoseconds: FetchDelayConfig.batchProcessingDelay)
         }
     }
     
@@ -89,7 +218,14 @@ class JobManager: ObservableObject {
     @Published var includeRemoteJobs: Bool = UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true {
         didSet { UserDefaults.standard.set(includeRemoteJobs, forKey: "includeRemoteJobs") }
     }
-    
+
+    @Published var autoCheckForUpdates: Bool = UserDefaults.standard.object(forKey: "autoCheckForUpdates") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoCheckForUpdates, forKey: "autoCheckForUpdates")
+            NotificationCenter.default.post(name: NSNotification.Name("UpdateCheckPreferenceChanged"), object: nil)
+        }
+    }
+
     // MARK: - Private Properties
     private var fetchTimers: [JobSource: Timer] = [:]
     private var storedJobIds: Set<String> = []
@@ -102,12 +238,10 @@ class JobManager: ObservableObject {
     // MARK: - Lifecycle
     
     deinit {
-        // Clean up observer
         if let observer = wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         
-        // Invalidate all timers
         fetchTimers.values.forEach { $0.invalidate() }
         fetchTimers.removeAll()
     }
@@ -124,6 +258,7 @@ class JobManager: ObservableObject {
         setupInitialState()
         setupBindings()
         setupWakeNotification()
+        setupCacheInvalidation()
     }
     
     // MARK: - Setup
@@ -133,6 +268,13 @@ class JobManager: ObservableObject {
         }
     }
     
+    private func setupCacheInvalidation() {
+        allJobsCancellable = $allJobs
+            .sink { [weak self] _ in
+                self?.filterCache.invalidate()
+            }
+    }
+
     private func setupBindings() {
         $enableTikTok
             .sink { [weak self] enabled in
@@ -187,10 +329,13 @@ class JobManager: ObservableObject {
     
     // MARK: - Public Methods
     func startMonitoring() async {
-        
-        // Initial fetch
+
+        if allJobs.isEmpty {
+            await loadStoredData()
+        }
+
         await fetchAllJobs()
-        
+
         if enableMicrosoft {
             startMonitoringSource(.microsoft)
         }
@@ -203,7 +348,7 @@ class JobManager: ObservableObject {
         if enableAMD {
             startMonitoringSource(.amd)
         }
-        
+
         if enableMeta {
             startMonitoringSource(.meta)
         }
@@ -227,7 +372,8 @@ class JobManager: ObservableObject {
         var allNewJobs: [Job] = []
         var sourceJobsMap: [JobSource: [Job]] = [:]
         
-        // Microsoft
+        // MARK: - Fetch from all enabled sources
+        
         if enableMicrosoft {
             tracker.startFetch(source: "Microsoft")
             do {
@@ -238,13 +384,12 @@ class JobManager: ObservableObject {
                 fetchStatistics.microsoftJobs = jobs.count
                 tracker.successFetch(source: "Microsoft", jobCount: jobs.count)
                 
-                // Auto-clear after 5 seconds
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "Microsoft")
                 }
             } catch {
-                print("🔵 [Microsoft] ❌ Error: \(error)")
+                print("[Microsoft] Error: \(error)")
                 lastError = "Microsoft: \(error.localizedDescription)"
                 tracker.failedFetch(source: "Microsoft", error: error)
                 
@@ -256,7 +401,6 @@ class JobManager: ObservableObject {
             sourceJobsMap[.microsoft] = []
         }
         
-        // TikTok
         if enableTikTok {
             tracker.startFetch(source: "TikTok")
             do {
@@ -268,11 +412,11 @@ class JobManager: ObservableObject {
                 tracker.successFetch(source: "TikTok", jobCount: jobs.count)
                 
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "TikTok")
                 }
             } catch {
-                print("🔵 [TikTok] ❌ Error: \(error)")
+                print("[TikTok] Error: \(error)")
                 lastError = "TikTok: \(error.localizedDescription)"
                 tracker.failedFetch(source: "TikTok", error: error)
                 
@@ -284,7 +428,6 @@ class JobManager: ObservableObject {
             sourceJobsMap[.tiktok] = []
         }
         
-        // Snap
         if enableSnap {
             tracker.startFetch(source: "Snap")
             do {
@@ -295,11 +438,11 @@ class JobManager: ObservableObject {
                 tracker.successFetch(source: "Snap", jobCount: jobs.count)
                 
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "Snap")
                 }
             } catch {
-                print("🔵 [Snap] ❌ Error: \(error)")
+                print("[Snap] Error: \(error)")
                 lastError = "Snap: \(error.localizedDescription)"
                 tracker.failedFetch(source: "Snap", error: error)
                 
@@ -311,7 +454,6 @@ class JobManager: ObservableObject {
             sourceJobsMap[.snap] = []
         }
         
-        // AMD
         if enableAMD {
             tracker.startFetch(source: "AMD")
             do {
@@ -323,11 +465,11 @@ class JobManager: ObservableObject {
                 tracker.successFetch(source: "AMD", jobCount: jobs.count)
                 
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "AMD")
                 }
             } catch {
-                print("🔵 [AMD] ❌ Error: \(error)")
+                print("[AMD] Error: \(error)")
                 lastError = "AMD: \(error.localizedDescription)"
                 tracker.failedFetch(source: "AMD", error: error)
                 
@@ -349,11 +491,11 @@ class JobManager: ObservableObject {
                 tracker.successFetch(source: "Meta", jobCount: jobs.count)
                 
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "Meta")
                 }
             } catch {
-                print("🔵 [Meta] ❌ Error: \(error)")
+                print("[Meta] Error: \(error)")
                 lastError = "Meta: \(error.localizedDescription)"
                 tracker.failedFetch(source: "Meta", error: error)
                 
@@ -365,7 +507,6 @@ class JobManager: ObservableObject {
             sourceJobsMap[.meta] = []
         }
         
-        // Custom Boards
         if enableCustomBoards {
             tracker.startFetch(source: "Custom Boards")
             do {
@@ -379,11 +520,11 @@ class JobManager: ObservableObject {
                 tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
                 
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "Custom Boards")
                 }
             } catch {
-                print("🔵 [Custom Boards] ❌ Error: \(error)")
+                print("[Custom Boards] Error: \(error)")
                 tracker.failedFetch(source: "Custom Boards", error: error)
             }
         }
@@ -466,7 +607,7 @@ class JobManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
-            print("🎚️ Mac woke up - triggering job refresh")
+            print("Mac woke up - triggering job refresh")
             Task {
                 await self.fetchAllJobs()
             }
@@ -533,7 +674,17 @@ class JobManager: ObservableObject {
     
     private func filterNewJobs(_ jobs: [Job]) -> [Job] {
         return jobs.filter { job in
-            !storedJobIds.contains(job.id)
+            // Include if this is a truly new job ID
+            if !storedJobIds.contains(job.id) {
+                return true
+            }
+            
+            // Also include if this is a recently bumped job (even if we've seen the ID before)
+            if job.isBumpedRecently {
+                return true
+            }
+            
+            return false
         }
     }
     
@@ -554,13 +705,8 @@ class JobManager: ObservableObject {
                 seenIds.insert(job.id)
             }
         }
-        
-        uniqueJobs.sort { job1, job2 in
-            let date1 = job1.postingDate ?? job1.firstSeenDate
-            let date2 = job2.postingDate ?? job2.firstSeenDate
-            return date1 > date2
-        }
-        
+
+        // No need to sort here - allJobs didSet will handle sorting automatically
         allJobs = uniqueJobs
         newJobsCount = newJobs.count
         
@@ -659,5 +805,58 @@ struct FetchStatistics {
         }
         
         return parts.joined(separator: " • ")
+    }
+}
+
+extension JobManager {
+    
+    func cleanupOldJobs() async {
+        let cutoffDate = Date().addingTimeInterval(-7 * 24 * 3600) // 7 days
+        
+        await MainActor.run {
+            // Remove jobs older than 7 days that aren't starred or applied
+            allJobs = allJobs.filter { job in
+                let jobDate = job.postingDate ?? job.firstSeenDate
+                let isRecent = jobDate > cutoffDate
+                let isImportant = isJobStarred(job) || isJobApplied(job)
+                
+                return isRecent || isImportant
+            }
+            
+            let currentIds = Set(allJobs.map { $0.id })
+            storedJobIds = storedJobIds.intersection(currentIds)
+        }
+        
+        try? await persistenceService.saveJobs(allJobs)
+        try? await persistenceService.saveStoredJobIds(storedJobIds)
+    }
+    
+    func scheduleCleanup() {
+        Task {
+            while true {
+                await cleanupOldJobs()
+                try? await Task.sleep(nanoseconds: 24 * 3600 * 1_000_000_000) // Daily
+            }
+        }
+    }
+}
+
+// MARK: - Incremental Loading for Large Result Sets
+
+extension JobManager {
+    
+    func loadJobsIncremental() async {
+        isLoading = true
+        
+        if let persistedJobs = try? await persistenceService.loadJobs() {
+            await MainActor.run {
+                allJobs = persistedJobs
+                loadingProgress = "Loaded \(persistedJobs.count) cached jobs"
+            }
+        }
+        
+        await fetchAllJobs()
+        
+        isLoading = false
     }
 }

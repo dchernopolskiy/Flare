@@ -41,7 +41,7 @@ struct SidebarView: View {
                 SidebarButton(
                     title: "Jobs",
                     icon: "list.bullet",
-                    badge: jobManager.jobs.isEmpty ? nil : "\(jobManager.jobs.count)",
+                    badge: jobManager.allJobs.isEmpty ? nil : "\(jobManager.allJobs.count)",
                     isSelected: jobManager.selectedTab == "jobs"
                 ) {
                     jobManager.selectedTab = "jobs"
@@ -113,7 +113,7 @@ struct SidebarView: View {
                     }
                 }
                 
-                Text("\(jobManager.jobs.count) jobs (24h)")
+                Text("\(jobManager.allJobs.count) recent jobs")
                     .font(.caption)
                     .fontWeight(.medium)
                 

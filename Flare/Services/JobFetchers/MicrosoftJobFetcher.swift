@@ -8,224 +8,360 @@
 import Foundation
 
 actor MicrosoftJobFetcher: JobFetcherProtocol {
-    private let baseURL = "https://gcsservices.careers.microsoft.com/search/api/v1/search"
+    private let baseURL = "https://apply.careers.microsoft.com/api/pcsx/search"
+    private let detailsBaseURL = "https://apply.careers.microsoft.com/api/pcsx/position_details"
     
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int = 5) async throws -> [Job] {
-        print("🔵 [Microsoft] Starting fetch with location: '\(location)'")
+        print("[Microsoft] Starting fetch with location: '\(location)'")
         let safeMaxPages = max(1, min(maxPages, 20))
 
         var allJobs: [Job] = []
         var globalSeenJobIds = Set<String>()
         
-        let targetCountries = LocationService.getMicrosoftLocationParams(location)
-        print("🔵 [Microsoft] Target countries from mapper: \(targetCountries)")
+        let targetLocations = LocationService.getMicrosoftLocationParams(location)
+        print("[Microsoft] Target locations from mapper: \(targetLocations)")
         
         let titles = titleKeywords.filter { !$0.isEmpty }
         
-        var searchCombinations: [(title: String, country: String)] = []
+        var searchCombinations: [(title: String, location: String)] = []
         
-        if titles.isEmpty && targetCountries.isEmpty {
+        if titles.isEmpty && targetLocations.isEmpty {
             searchCombinations.append(("", "United States"))
         } else if titles.isEmpty {
-            for country in targetCountries {
-                searchCombinations.append(("", country))
+            for loc in targetLocations {
+                searchCombinations.append(("", loc))
             }
-        } else if targetCountries.isEmpty {
+        } else if targetLocations.isEmpty {
             for title in titles {
                 searchCombinations.append((title, "United States"))
             }
         } else {
             for title in titles {
-                for country in targetCountries {
-                    searchCombinations.append((title, country))
+                for loc in targetLocations {
+                    searchCombinations.append((title, loc))
                 }
             }
         }
         
         for (index, combo) in searchCombinations.enumerated() {
-            let description = [combo.title, combo.country].filter { !$0.isEmpty }.joined(separator: " in ")
+            let description = [combo.title, combo.location].filter { !$0.isEmpty }.joined(separator: " in ")
+            let totalSearches = searchCombinations.count
             
             await MainActor.run {
-                JobManager.shared.loadingProgress = "Microsoft search \(index + 1)/\(searchCombinations.count): \(description)"
+                JobManager.shared.loadingProgress = "Microsoft search \(index + 1)/\(totalSearches): \(description)"
             }
             
             let pageLimit = min(safeMaxPages, 3)
-            for page in 1...pageLimit {
-                let jobs = try await executeIndividualSearch(
-                    title: combo.title,
-                    country: combo.country,
-                    maxPages: max(1, maxPages / searchCombinations.count)
-                )
-                
-                let newJobs = jobs.filter { job in
-                    if globalSeenJobIds.contains(job.id) {
-                        return false
-                    }
-                    globalSeenJobIds.insert(job.id)
-                    return true
+            let jobs = try await executeIndividualSearch(
+                title: combo.title,
+                location: combo.location,
+                maxPages: pageLimit
+            )
+            
+            let newJobs = jobs.filter { job in
+                if globalSeenJobIds.contains(job.id) {
+                    return false
                 }
-                
-                allJobs.append(contentsOf: newJobs)
-                
-                try await Task.sleep(nanoseconds: 700_000_000)
+                globalSeenJobIds.insert(job.id)
+                return true
             }
+            
+            allJobs.append(contentsOf: newJobs)
+
+            try await Task.sleep(nanoseconds: FetchDelayConfig.fetchPageDelay * 2) // Longer delay for Microsoft
         }
         
         await MainActor.run {
             JobManager.shared.loadingProgress = ""
         }
         
-        print("🔵 [Microsoft] Total jobs returned: \(allJobs.count)")
+        print("[Microsoft] Total jobs returned: \(allJobs.count)")
         return allJobs
     }
     
-    private func executeIndividualSearch(title: String, country: String, maxPages: Int) async throws -> [Job] {
+    private func executeIndividualSearch(title: String, location: String, maxPages: Int) async throws -> [Job] {
         var jobs: [Job] = []
-        let pageLimit = min(maxPages, 3)
+        let pageSize = 10  // Microsoft API returns 10 results per page
+        var totalCount: Int?
         
-        for page in 1...pageLimit {
+        for page in 0..<maxPages {
+            let startIndex = page * pageSize
+            if let total = totalCount, startIndex >= total {
+                print("[Microsoft] Reached total count (\(total)), stopping pagination")
+                break
+            }
+            
             var components = URLComponents(string: baseURL)!
             components.queryItems = [
-                URLQueryItem(name: "lc", value: country),
-                URLQueryItem(name: "l", value: "en_us"),
-                URLQueryItem(name: "pg", value: String(page)),
-                URLQueryItem(name: "pgSz", value: "20"),
-                URLQueryItem(name: "o", value: "Recent"),
-                URLQueryItem(name: "flt", value: "true")
+                URLQueryItem(name: "domain", value: "microsoft.com"),
+                URLQueryItem(name: "start", value: String(startIndex)),
+                URLQueryItem(name: "sort_by", value: "timestamp"),
+                URLQueryItem(name: "filter_distance", value: "160"),
+                URLQueryItem(name: "includeRemote", value: "1")
             ]
             
             if !title.isEmpty {
-                components.queryItems?.append(URLQueryItem(name: "q", value: title))
+                components.queryItems?.append(URLQueryItem(name: "query", value: title))
+            }
+            
+            if !location.isEmpty {
+                components.queryItems?.append(URLQueryItem(name: "location", value: location))
             }
             
             var request = URLRequest(url: components.url!)
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
             request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+            request.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
+            request.setValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
+            request.timeoutInterval = 15
             
-            if page == 1 {
-                print("🔵 [Microsoft] Query URL: \(components.url!)")
+            if page == 0 {
+                print("[Microsoft] Query URL: \(components.url!)")
             }
             
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("🪟 [Microsoft] ❌ Invalid response object")
+                print("[Microsoft] Invalid response object")
                 throw FetchError.invalidResponse
             }
 
             guard httpResponse.statusCode == 200 else {
-                print("🪟 [Microsoft] ❌ HTTP error: \(httpResponse.statusCode)")
+                print("[Microsoft] HTTP error: \(httpResponse.statusCode)")
                 throw FetchError.httpError(statusCode: httpResponse.statusCode)
             }
             
-            let pageJobs = try parseResponse(data, targetCountry: country)
-            jobs.append(contentsOf: pageJobs)
+            let (pageJobs, count) = try parseResponse(data)
             
-            if pageJobs.count < 20 {
-                break
+            
+            if page == 0 {
+                totalCount = count
+                print("Total available jobs: \(count)")
+                print("Page \(page + 1): Found \(pageJobs.count) jobs")
             }
             
-            try await Task.sleep(nanoseconds: 300_000_000)
+            jobs.append(contentsOf: pageJobs)
+            
+            if pageJobs.isEmpty || pageJobs.count < pageSize {
+                print("Last page reached (got \(pageJobs.count) jobs)")
+                break
+            }
+
+            try await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
+        print("Total jobs fetched: \(jobs.count)")
         
         return jobs
     }
     
-    private func parseResponse(_ data: Data, targetCountry: String) throws -> [Job] {
+    private func parseResponse(_ data: Data) throws -> ([Job], Int) {
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         
         let response: MSResponse
         do {
             response = try decoder.decode(MSResponse.self, from: data)
         } catch let DecodingError.keyNotFound(key, context) {
-            print("🪟 [Microsoft] ❌ Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
+            print("[Microsoft] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🪟 [Microsoft] Response preview: \(responseString.prefix(500))")
+                print("[Microsoft] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Microsoft response")
         } catch {
-            print("🪟 [Microsoft] ❌ Decoding error: \(error)")
+            print("[Microsoft] Decoding error: \(error)")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🪟 [Microsoft] Response preview: \(responseString.prefix(500))")
+                print("[Microsoft] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Failed to decode Microsoft response: \(error.localizedDescription)")
         }
         
+        guard response.status == 200 else {
+            let errorMsg = response.error?.message ?? "Unknown error"
+            print("[Microsoft] API error: \(errorMsg)")
+            throw FetchError.apiError(errorMsg)
+        }
+        
         var jobs: [Job] = []
         
-        for (index, msJob) in response.operationResult.result.jobs.enumerated() {
-            guard !msJob.title.isEmpty else {
-                print("🪟 [Microsoft] ⚠️ Skipping job at index \(index): empty title")
+        for (index, position) in response.data.positions.enumerated() {
+            guard !position.name.isEmpty else {
+                print("[Microsoft] Skipping job at index \(index): empty name")
                 continue
             }
             
-            guard !msJob.jobId.isEmpty else {
-                print("🪟 [Microsoft] ⚠️ Skipping job '\(msJob.title)' at index \(index): empty jobId")
+            guard !position.displayJobId.isEmpty else {
+                print("[Microsoft] Skipping job '\(position.name)' at index \(index): empty displayJobId")
                 continue
             }
             
-            let jobLocations = msJob.properties?.locations ?? []
-            let primaryLocation = msJob.properties?.primaryLocation ?? ""
-            
-            var allLocations = jobLocations
-            if !primaryLocation.isEmpty && !allLocations.contains(primaryLocation) {
-                allLocations.append(primaryLocation)
-            }
-            
-            if allLocations.isEmpty {
-                continue
-            }
-            
-            let displayLocation = allLocations.first ?? "Location not specified"
-            
-            let workSiteFlexibility = msJob.properties?.workSiteFlexibility ?? ""
-            let isHybrid = workSiteFlexibility.contains("days / week") ||
-                           workSiteFlexibility.contains("days/week") ||
-                           workSiteFlexibility.lowercased().contains("hybrid")
-            let isRemote = workSiteFlexibility.lowercased().contains("100%") ||
-                           workSiteFlexibility.lowercased().contains("remote")
-            
-            var finalLocation = displayLocation
-            if isHybrid {
-                finalLocation += " (Hybrid: \(workSiteFlexibility))"
-            } else if isRemote {
-                finalLocation += " (Remote)"
-            }
-            
-            var cleanTitle = msJob.title
-            if msJob.title.contains(" - ") {
-                let parts = msJob.title.components(separatedBy: " - ")
-                if parts.count > 1 {
-                    cleanTitle = parts.dropLast().joined(separator: " - ")
+            let primaryLocation = position.locations.first ?? "Location not specified"
+            var displayLocation = primaryLocation
+            if let workOption = position.workLocationOption {
+                switch workOption.lowercased() {
+                case "onsite", "fully on-site":
+                    displayLocation += " (On-site)"
+                case "remote":
+                    displayLocation += " (Remote)"
+                case "hybrid":
+                    displayLocation += " (Hybrid)"
+                default:
+                    if workOption.contains("days") || workOption.contains("week") {
+                        displayLocation += " (Hybrid: \(workOption))"
+                    }
                 }
             }
             
+            let postingDate = position.lastRefreshDate
+            let originalDate = position.originalPostingDate
+            let isBumped = position.wasBumped
+            if isBumped {
+                print("🔵 [Microsoft] Job '\(position.name)' was BUMPED:")
+                print("  - Original posting (creationTs): \(originalDate)")
+                print("  - Last refresh (postedTs): \(postingDate)")
+                print("  - Time diff: \(postingDate.timeIntervalSince(originalDate) / 3600) hours")
+            }
+            
+            let jobURL: String
+            if !position.positionUrl.isEmpty {
+                jobURL = "https://apply.careers.microsoft.com\(position.positionUrl)"
+            } else {
+                jobURL = "https://apply.careers.microsoft.com/careers/job/\(position.id)"
+            }
+            
             let job = Job(
-                id: "microsoft-\(msJob.jobId)",
-                title: cleanTitle,
-                location: finalLocation,
-                postingDate: parseDate(msJob.postingDate),
-                url: "https://careers.microsoft.com/us/en/job/\(msJob.jobId)",
-                description: msJob.properties?.description ?? "",
-                workSiteFlexibility: workSiteFlexibility,
+                id: "microsoft-\(position.id)-\(position.displayJobId)",
+                title: position.name,
+                location: displayLocation,
+                postingDate: postingDate,
+                url: jobURL,
+                description: "", // Not included in search results
+                workSiteFlexibility: position.workLocationOption ?? "",
                 source: .microsoft,
                 companyName: "Microsoft",
-                department: msJob.properties?.discipline,
-                category: msJob.properties?.profession,
-                firstSeenDate: Date()
+                department: position.department,
+                category: nil,
+                firstSeenDate: Date(),
+                originalPostingDate: originalDate,
+                wasBumped: isBumped
             )
             
             jobs.append(job)
         }
         
-        return jobs
+        return (jobs, response.data.count)
     }
-    
-    private func parseDate(_ dateString: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: dateString)
+
+    // MARK: - Job Details Fetching
+
+    func fetchJobDescription(positionId: String, domain: String = "microsoft.com") async throws -> String? {
+        var components = URLComponents(string: detailsBaseURL)!
+        components.queryItems = [
+            URLQueryItem(name: "position_id", value: positionId),
+            URLQueryItem(name: "domain", value: domain),
+            URLQueryItem(name: "hl", value: "en")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "accept")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "accept-language")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36", forHTTPHeaderField: "user-agent")
+        request.setValue("same-origin", forHTTPHeaderField: "sec-fetch-site")
+        request.setValue("cors", forHTTPHeaderField: "sec-fetch-mode")
+        request.setValue("empty", forHTTPHeaderField: "sec-fetch-dest")
+        request.timeoutInterval = 10
+
+        print("[Microsoft] Fetching details for position: \(positionId)")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw FetchError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            print("[Microsoft] Details API HTTP error: \(httpResponse.statusCode)")
+            throw FetchError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        let decoder = JSONDecoder()
+        let detailsResponse: MSPositionDetailsResponse
+        do {
+            detailsResponse = try decoder.decode(MSPositionDetailsResponse.self, from: data)
+        } catch {
+            print("[Microsoft] Failed to decode position details: \(error)")
+            if let responseString = String(data: data, encoding: .utf8) {
+                print("[Microsoft] Response preview: \(responseString.prefix(500))")
+            }
+            throw FetchError.decodingError(details: "Failed to decode position details: \(error.localizedDescription)")
+        }
+
+        guard detailsResponse.status == 200 else {
+            let errorMsg = detailsResponse.error?.message ?? "Unknown error"
+            print("[Microsoft] Details API error: \(errorMsg)")
+            throw FetchError.apiError(errorMsg)
+        }
+
+        return detailsResponse.data?.jobDescription
+    }
+
+    func fetchJobsWithDetails(titleKeywords: [String], location: String, maxPages: Int = 5, includeDescriptions: Bool = false) async throws -> [Job] {
+        // First, fetch all jobs normally
+        let jobs = try await fetchJobs(titleKeywords: titleKeywords, location: location, maxPages: maxPages)
+
+        guard includeDescriptions else {
+            return jobs
+        }
+
+        print("[Microsoft] Fetching detailed descriptions for \(jobs.count) jobs...")
+
+        var jobsWithDescriptions: [Job] = []
+
+        for (index, job) in jobs.enumerated() {
+            let components = job.id.split(separator: "-")
+            guard components.count >= 2,
+                  components[0] == "microsoft",
+                  let positionId = components[1].split(separator: "-").first else {
+                print("[Microsoft] Invalid job ID format: \(job.id)")
+                jobsWithDescriptions.append(job)
+                continue
+            }
+
+            do {
+                if let description = try await fetchJobDescription(positionId: String(positionId)) {
+                    let updatedJob = Job(
+                        id: job.id,
+                        title: job.title,
+                        location: job.location,
+                        postingDate: job.postingDate,
+                        url: job.url,
+                        description: description,
+                        workSiteFlexibility: job.workSiteFlexibility,
+                        source: job.source,
+                        companyName: job.companyName,
+                        department: job.department,
+                        category: job.category,
+                        firstSeenDate: job.firstSeenDate,
+                        originalPostingDate: job.originalPostingDate,
+                        wasBumped: job.wasBumped
+                    )
+                    jobsWithDescriptions.append(updatedJob)
+                } else {
+                    jobsWithDescriptions.append(job)
+                }
+            } catch {
+                print("[Microsoft] Failed to fetch description for \(positionId): \(error)")
+                jobsWithDescriptions.append(job)
+            }
+
+            if (index + 1) % 10 == 0 {
+                print("[Microsoft] Fetched descriptions for \(index + 1)/\(jobs.count) jobs")
+            }
+
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+        }
+
+        print("[Microsoft] Completed fetching descriptions for \(jobsWithDescriptions.count) jobs")
+        return jobsWithDescriptions
     }
 }

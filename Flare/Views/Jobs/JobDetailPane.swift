@@ -109,7 +109,7 @@ struct JobInfoSection: View {
                 }
                 
                 if jobManager.isJobApplied(job) {
-                    Badge(text: "APPLIED", color: .green)
+                    AppliedBadge()
                 }
             }
             
@@ -118,7 +118,23 @@ struct JobInfoSection: View {
                 Label(job.location, systemImage: "location")
                     .font(.callout)
                 
-                if let postingDate = job.postingDate {
+                if job.wasBumped, let postingDate = job.postingDate {
+                    Label {
+                        HStack(spacing: 4) {
+                            Text("Refreshed")
+                            Text(postingDate, style: .relative) + Text(" ago")
+                            if let originalDate = job.originalPostingDate {
+                                Text("•")
+                                Text("Originally posted")
+                                Text(originalDate, style: .relative) + Text(" ago")
+                            }
+                        }
+                    } icon: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .font(.callout)
+                    .foregroundColor(.blue)
+                } else if let postingDate = job.postingDate {
                     Label {
                         Text(postingDate, style: .relative) + Text(" ago")
                     } icon: {

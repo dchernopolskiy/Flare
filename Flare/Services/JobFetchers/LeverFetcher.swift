@@ -7,11 +7,7 @@
 
 import Foundation
 
-actor LeverFetcher: JobFetcherProtocol {
-    func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
-        return []
-    }
-    
+actor LeverFetcher: URLBasedJobFetcherProtocol {
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let slug = extractLeverSlug(from: url)
         guard let apiURL = URL(string: "https://api.lever.co/v0/postings/\(slug)?mode=json") else {
@@ -21,14 +17,14 @@ actor LeverFetcher: JobFetcherProtocol {
         let (data, response) = try await URLSession.shared.data(from: apiURL)
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            print("🎚️ [Lever] ❌ Invalid response object")
+            print("[Lever] Invalid response object")
             throw FetchError.invalidResponse
         }
         
         guard httpResponse.statusCode == 200 else {
-            print("🎚️ [Lever] ❌ HTTP error: \(httpResponse.statusCode)")
+            print("[Lever] HTTP error: \(httpResponse.statusCode)")
             if let errorString = String(data: data, encoding: .utf8) {
-                print("🎚️ [Lever] Response preview: \(errorString.prefix(200))")
+                print("[Lever] Response preview: \(errorString.prefix(200))")
             }
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
@@ -37,15 +33,15 @@ actor LeverFetcher: JobFetcherProtocol {
         do {
             decoded = try JSONDecoder().decode([LeverJob].self, from: data)
         } catch let DecodingError.keyNotFound(key, context) {
-            print("🎚️ [Lever] ❌ Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
+            print("[Lever] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🎚️ [Lever] Response preview: \(responseString.prefix(500))")
+                print("[Lever] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Lever response")
         } catch {
-            print("🎚️ [Lever] ❌ Decoding error: \(error)")
+            print("[Lever] Decoding error: \(error)")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🎚️ [Lever] Response preview: \(responseString.prefix(500))")
+                print("[Lever] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Failed to decode Lever response: \(error.localizedDescription)")
         }
@@ -59,17 +55,17 @@ actor LeverFetcher: JobFetcherProtocol {
         
         return decoded.enumerated().compactMap { (index, job) -> Job? in
             guard !job.text.isEmpty else {
-                print("🎚️ [Lever] ⚠️ Skipping job at index \(index): empty title")
+                print("[Lever] Skipping job at index \(index): empty title")
                 return nil
             }
             
             guard !job.id.isEmpty else {
-                print("🎚️ [Lever] ⚠️ Skipping job '\(job.text)' at index \(index): empty ID")
+                print("[Lever] Skipping job '\(job.text)' at index \(index): empty ID")
                 return nil
             }
             
             guard !job.hostedUrl.isEmpty else {
-                print("🎚️ [Lever] ⚠️ Skipping job '\(job.text)' at index \(index): empty URL")
+                print("[Lever] Skipping job '\(job.text)' at index \(index): empty URL")
                 return nil
             }
             
@@ -106,7 +102,9 @@ actor LeverFetcher: JobFetcherProtocol {
                 companyName: slug.capitalized,
                 department: job.categories.team,
                 category: job.categories.commitment,
-                firstSeenDate: Date()
+                firstSeenDate: Date(),
+                originalPostingDate: nil,
+                wasBumped: false
             )
         }
     }

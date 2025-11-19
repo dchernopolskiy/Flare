@@ -7,26 +7,22 @@
 
 import Foundation
 
-actor SnapFetcher: JobFetcherProtocol {
+actor SnapFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     private let apiURL = URL(string: "https://careers.snap.com/api/jobs")!
-    
-    private struct JobTrackingData: Codable {
-        let id: String
-        let firstSeenDate: Date
-    }
-    
+    private let trackingService = JobTrackingService.shared
+
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
-        
-        let trackingData = await loadJobTrackingData()
+
+        let trackingData = await trackingService.loadTrackingData(for: "snap")
         let currentDate = Date()
-        
+
         let jobs = try await fetchAllJobs(trackingData: trackingData, currentDate: currentDate)
-        
+
         let filteredJobs = applyFilters(jobs: jobs, titleKeywords: titleKeywords, location: location)
+
+        await trackingService.saveTrackingData(filteredJobs, for: "snap", currentDate: currentDate, retentionDays: 30)
         
-        await saveJobTrackingData(filteredJobs, currentDate: currentDate)
-        
-        print("👻‘» [Snap] Fetched \(jobs.count) total jobs, \(filteredJobs.count) after filtering")
+        print("[Snap] Fetched \(jobs.count) total jobs, \(filteredJobs.count) after filtering")
         return filteredJobs
     }
     
@@ -49,7 +45,7 @@ actor SnapFetcher: JobFetcherProtocol {
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
         
-        print("👻‘» [Snap] Fetching from: \(url)")
+        print("[Snap] Fetching from: \(url)")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -59,7 +55,7 @@ actor SnapFetcher: JobFetcherProtocol {
         
         guard httpResponse.statusCode == 200 else {
             if let errorString = String(data: data, encoding: .utf8) {
-                print("👻[Snap] Error response: \(errorString.prefix(200))")
+                print("[Snap] Error response: \(errorString.prefix(200))")
             }
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
@@ -68,28 +64,28 @@ actor SnapFetcher: JobFetcherProtocol {
         do {
             decoded = try JSONDecoder().decode(SnapResponse.self, from: data)
         } catch let DecodingError.keyNotFound(key, context) {
-            print("👻‘» [Snap] ❌ Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
+            print("[Snap] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("👻‘» [Snap] Response preview: \(responseString.prefix(500))")
+                print("[Snap] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Snap response")
         } catch {
-            print("👻‘» [Snap] ❌ Decoding error: \(error)")
+            print("[Snap] Decoding error: \(error)")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("👻‘» [Snap] Response preview: \(responseString.prefix(500))")
+                print("[Snap] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Failed to decode Snap response: \(error.localizedDescription)")
         }
         
         let jobs = decoded.body.enumerated().compactMap { (index, snapJob) -> Job? in
             guard let source = snapJob._source else {
-                print("👻‘» [Snap]¸ Skipping job at index \(index): missing _source")
+                print("[Snap] Skipping job at index \(index): missing _source")
                 return nil
             }
             
             let title = source.title ?? "Untitled Position"
             guard !title.isEmpty else {
-                print("👻‘» [Snap]¸ Skipping job at index \(index): empty title")
+                print("[Snap] Skipping job at index \(index): empty title")
                 return nil
             }
             
@@ -117,7 +113,9 @@ actor SnapFetcher: JobFetcherProtocol {
                 companyName: "Snap Inc.",
                 department: source.departments,
                 category: source.role,
-                firstSeenDate: firstSeenDate
+                firstSeenDate: firstSeenDate,
+                originalPostingDate: nil,
+                wasBumped: false
             )
         }
         
@@ -199,74 +197,26 @@ actor SnapFetcher: JobFetcherProtocol {
     
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let titleKeywords = parseFilterString(titleFilter)
-        
-        let trackingData = await loadJobTrackingData()
+
+        let trackingData = await trackingService.loadTrackingData(for: "snap")
         let currentDate = Date()
-        
+
         let jobs = try await fetchAllJobs(trackingData: trackingData, currentDate: currentDate)
-        
+
         let filteredJobs = applyFilters(jobs: jobs, titleKeywords: titleKeywords, location: locationFilter)
-        
-        await saveJobTrackingData(filteredJobs, currentDate: currentDate)
-        
+
+        await trackingService.saveTrackingData(filteredJobs, for: "snap", currentDate: currentDate, retentionDays: 30)
+
         return filteredJobs
     }
-    
+
     private func parseFilterString(_ filterString: String) -> [String] {
         guard !filterString.isEmpty else { return [] }
-        
+
         return filterString
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-    }
-    
-    // MARK: - Persistence with proper date tracking
-    private func loadJobTrackingData() async -> [String: Date] {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("snapJobTracking.json")
-        
-        do {
-            let data = try Data(contentsOf: url)
-            let trackingData = try JSONDecoder().decode([JobTrackingData].self, from: data)
-            
-            var dict: [String: Date] = [:]
-            for item in trackingData {
-                dict[item.id] = item.firstSeenDate
-            }
-            
-            return dict
-        } catch {
-            return [:]
-        }
-    }
-    
-    private func saveJobTrackingData(_ jobs: [Job], currentDate: Date) async {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("snapJobTracking.json")
-        
-        do {
-            var existingData = await loadJobTrackingData()
-            
-            for job in jobs {
-                if existingData[job.id] == nil {
-                    existingData[job.id] = currentDate
-                }
-            }
-            
-            let trackingData = existingData.map { JobTrackingData(id: $0.key, firstSeenDate: $0.value) }
-            
-            let cutoffDate = Date().addingTimeInterval(-30 * 24 * 3600)
-            let recentData = trackingData.filter { $0.firstSeenDate > cutoffDate }
-            
-            let data = try JSONEncoder().encode(recentData)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
-            
-        } catch {
-        }
     }
 }
 

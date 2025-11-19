@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var enableMeta = true
     @State private var enableCustomBoards = true
     @State private var includeRemoteJobs = true
+    @State private var autoCheckForUpdates = true
     @State private var showSuccessMessage = false
     
     var body: some View {
@@ -150,7 +151,7 @@ struct SettingsView: View {
                             Text("This is the default interval. Some sources have fixed intervals.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            
+
                             HStack {
                                 Text("Fetch up to")
                                 TextField("", value: $maxPagesToFetch, format: .number)
@@ -161,6 +162,31 @@ struct SettingsView: View {
                                 Spacer()
                             }
                             .help("Each page contains 20 jobs. More pages = longer fetch time")
+                        }
+                    }
+
+                    // App Updates Section
+                    SettingsSection(title: "App Updates") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle(isOn: $autoCheckForUpdates) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Automatically check for updates")
+                                    Text("Check for app updates daily at 10 AM")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            HStack {
+                                Button(action: {
+                                    checkForUpdatesManually()
+                                }) {
+                                    Label("Check for Updates Now", systemImage: "arrow.clockwise")
+                                }
+                                .buttonStyle(.bordered)
+
+                                Spacer()
+                            }
                         }
                     }
                     
@@ -287,6 +313,7 @@ struct SettingsView: View {
         enableMeta = jobManager.enableMeta
         enableCustomBoards = jobManager.enableCustomBoards
         includeRemoteJobs = jobManager.includeRemoteJobs
+        autoCheckForUpdates = jobManager.autoCheckForUpdates
     }
     
     private func saveSettings() {
@@ -301,9 +328,16 @@ struct SettingsView: View {
         jobManager.enableMeta = enableMeta
         jobManager.enableCustomBoards = enableCustomBoards
         jobManager.includeRemoteJobs = includeRemoteJobs
-        
+        jobManager.autoCheckForUpdates = autoCheckForUpdates
+
         Task {
             await jobManager.startMonitoring()
+        }
+    }
+
+    private func checkForUpdatesManually() {
+        if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
+            appDelegate.checkForUpdatesNow()
         }
     }
 }

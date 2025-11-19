@@ -26,6 +26,9 @@ struct Job: Identifiable, Codable, Equatable {
     let category: String?
     let firstSeenDate: Date
     
+    let originalPostingDate: Date?
+    let wasBumped: Bool
+    
     var isRecent: Bool {
         if let postingDate = postingDate {
             let hoursSincePosting = Date().timeIntervalSince(postingDate) / 3600
@@ -34,6 +37,12 @@ struct Job: Identifiable, Codable, Equatable {
         // use first seen date for TikTok and such
         let hoursSinceFirstSeen = Date().timeIntervalSince(firstSeenDate) / 3600
         return hoursSinceFirstSeen <= 24 && hoursSinceFirstSeen >= 0
+    }
+    
+    var isBumpedRecently: Bool {
+        guard wasBumped, let postingDate = postingDate else { return false }
+        let hoursSinceRefresh = Date().timeIntervalSince(postingDate) / 3600
+        return hoursSinceRefresh <= 24 && hoursSinceRefresh >= 0
     }
     
     var cleanDescription: String {

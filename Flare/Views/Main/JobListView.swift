@@ -6,99 +6,26 @@
 //
 
 import SwiftUI
-
-@propertyWrapper
-struct PersistedJobSources: DynamicProperty {
-    @State private var value: Set<JobSource>
-    let key: String
-    
-    var wrappedValue: Set<JobSource> {
-        get { value }
-        nonmutating set {
-            value = newValue
-            save()
-        }
-    }
-    
-    var projectedValue: Binding<Set<JobSource>> {
-        Binding(
-            get: { value },
-            set: { newValue in
-                value = newValue
-                save()
-            }
-        )
-    }
-    
-    init(wrappedValue: Set<JobSource> = Set(JobSource.allCases.filter { $0.isSupported }), key: String = "selectedJobSources") {
-        self.key = key
-        
-        if let data = UserDefaults.standard.data(forKey: key),
-           let decoded = try? JSONDecoder().decode([String].self, from: data),
-           !decoded.isEmpty {
-            let sources = decoded.compactMap { rawValue in
-                JobSource(rawValue: rawValue)
-            }.filter { $0.isSupported }
-            
-            if !sources.isEmpty {
-                self._value = State(initialValue: Set(sources))
-            } else {
-                self._value = State(initialValue: wrappedValue)
-            }
-        } else {
-            self._value = State(initialValue: wrappedValue)
-        }
-    }
-    
-    private func save() {
-        let rawValues = value.map { $0.rawValue }
-        if let encoded = try? JSONEncoder().encode(rawValues) {
-            UserDefaults.standard.set(encoded, forKey: key)
-        }
-    }
-}
+import WebKit
+import Combine
 
 struct JobListView: View {
     @EnvironmentObject var jobManager: JobManager
-    @EnvironmentObject var boardMonitor: JobBoardMonitor
     @Binding var sidebarVisible: Bool
     let isWindowMinimized: Bool
     
-    @State private var searchText = UserDefaults.standard.string(forKey: "jobSearchText") ?? ""
-    @PersistedJobSources private var selectedSources
-    @State private var showOnlyStarred = UserDefaults.standard.bool(forKey: "showOnlyStarredJobs")
-    @State private var showOnlyApplied = UserDefaults.standard.bool(forKey: "showOnlyAppliedJobs")
-
-    var filteredJobs: [Job] {
-        var result = jobManager.jobs
-        
-        if !searchText.isEmpty {
-            result = result.filter { job in
-                job.title.localizedCaseInsensitiveContains(searchText) ||
-                job.location.localizedCaseInsensitiveContains(searchText) ||
-                job.companyName?.localizedCaseInsensitiveContains(searchText) ?? false ||
-                job.department?.localizedCaseInsensitiveContains(searchText) ?? false
-            }
-        }
-        
-        if !selectedSources.isEmpty {
-            result = result.filter { selectedSources.contains($0.source) }
-        }
-        
-        if showOnlyStarred {
-            result = result.filter { jobManager.isJobStarred($0) }
-        }
-        
-        if showOnlyApplied {
-            result = result.filter { jobManager.isJobApplied($0) }
-        }
-        
-        return result
-    }
+    @State private var searchText = ""
+    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday].filter { $0.isSupported })
+    @State private var showOnlyStarred = false
+    @State private var showOnlyApplied = false
+    @State private var cachedJobs: [Job] = []
+    @State private var lastFilterUpdate = Date()
+    
+    private let filterPublisher = PassthroughSubject<Void, Never>()
+    @State private var filterCancellable: AnyCancellable?
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             JobListHeader(
                 searchText: $searchText,
                 selectedSources: $selectedSources,
@@ -108,35 +35,78 @@ struct JobListView: View {
             
             Divider()
             
-            if filteredJobs.isEmpty && !jobManager.isLoading {
+            if jobManager.isLoading && cachedJobs.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if cachedJobs.isEmpty {
                 EmptyJobsView()
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(filteredJobs) { job in
-                            JobRow(
-                                job: job,
-                                sidebarVisible: $sidebarVisible,
-                                isWindowMinimized: isWindowMinimized
-                            )
-                            Divider()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0, pinnedViews: []) {
+                            ForEach(cachedJobs) { job in
+                                JobRow(
+                                    job: job,
+                                    sidebarVisible: $sidebarVisible,
+                                    isWindowMinimized: isWindowMinimized
+                                )
+                                .id(job.id)
+                                .transition(.opacity)
+
+                                Divider()
+                            }
+
+                            if let error = jobManager.lastError {
+                                ErrorBanner(message: error)
+                                    .padding(.top, 8)
+                            }
+
+                            if jobManager.isLoading {
+                                HStack {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                    Text(jobManager.loadingProgress.isEmpty ? "Refreshing..." : jobManager.loadingProgress)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding()
+                            }
                         }
                     }
                 }
             }
-            
-            if let error = jobManager.lastError {
-                ErrorBanner(message: error)
+        }
+        .onAppear {
+            setupFilterDebouncing()
+            updateFilteredJobs()
+        }
+        .onChange(of: searchText) { _ in filterPublisher.send() }
+        .onChange(of: selectedSources) { _ in filterPublisher.send() }
+        .onChange(of: showOnlyStarred) { _ in filterPublisher.send() }
+        .onChange(of: showOnlyApplied) { _ in filterPublisher.send() }
+        .onChange(of: jobManager.allJobs) { _ in
+            updateFilteredJobs()
+        }
+    }
+    
+    private func setupFilterDebouncing() {
+        filterCancellable = filterPublisher
+            .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
+            .sink { _ in
+                updateFilteredJobs()
             }
-        }
-        .onChange(of: searchText) { newValue in
-            UserDefaults.standard.set(newValue, forKey: "jobSearchText")
-        }
-        .onChange(of: showOnlyStarred) { newValue in
-            UserDefaults.standard.set(newValue, forKey: "showOnlyStarredJobs")
-        }
-        .onChange(of: showOnlyApplied) { newValue in
-            UserDefaults.standard.set(newValue, forKey: "showOnlyAppliedJobs")
+    }
+    
+    private func updateFilteredJobs() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            cachedJobs = jobManager.getFilteredJobs(
+                titleFilter: searchText,
+                locationFilter: jobManager.locationFilter,
+                sourcesFilter: selectedSources,
+                showStarred: showOnlyStarred,
+                showApplied: showOnlyApplied
+            )
+            print("[JobListView] Updated filtered jobs: \(cachedJobs.count) jobs from \(jobManager.allJobs.count) total")
         }
     }
 }
@@ -149,9 +119,7 @@ struct JobListHeader: View {
     @Binding var showOnlyStarred: Bool
     @Binding var showOnlyApplied: Bool
     
-    // Show all possible sources
     private var supportedSources: [JobSource] {
-        // Return all supported source types
         return [.microsoft, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday]
             .filter { $0.isSupported }
             .sorted { $0.rawValue < $1.rawValue }
@@ -171,7 +139,7 @@ struct JobListHeader: View {
         VStack(spacing: 12) {
             // Title and Actions
             HStack {
-                Text("Jobs (Last 48 Hours)")
+                Text("Recent Jobs")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
@@ -190,7 +158,8 @@ struct JobListHeader: View {
                         
                         Divider()
                         
-                        ForEach(supportedSources, id: \.self) { source in
+                        ForEach(supportedSources.indices, id: \.self) { index in
+                            let source = supportedSources[index]
                             Button(action: {
                                 toggleSource(source)
                             }) {
@@ -200,8 +169,7 @@ struct JobListHeader: View {
                                         .foregroundColor(source.color)
                                     Text(source.rawValue)
                                     
-                                    // Show job count
-                                    let count = jobManager.jobs.filter { $0.source == source }.count
+                                    let count = jobManager.allJobs.filter { $0.source == source }.count
                                     if count > 0 {
                                         Text("(\(count))")
                                             .foregroundColor(.secondary)

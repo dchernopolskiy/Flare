@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct JobBoardsView: View {
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     @EnvironmentObject var jobManager: JobManager
     @State private var newBoardName = ""
     @State private var newBoardURL = ""
@@ -118,7 +118,7 @@ struct JobBoardsView: View {
 // MARK: - Import/Export Section
 
 struct ImportExportSection: View {
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     @Binding var showImportDialog: Bool
     @Binding var showExportDialog: Bool
     @Binding var importResult: String?
@@ -187,7 +187,7 @@ struct AddBoardSection: View {
     @State private var isDetecting = false
     @State private var detectionResult: ATSDetectorService.DetectionResult?
     @State private var urlToUse: String = ""
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     @EnvironmentObject var jobManager: JobManager
     
     private var detectedSource: JobSource? {
@@ -210,7 +210,21 @@ struct AddBoardSection: View {
     }
     
     private var needsDetection: Bool {
-        !isDirectATSLink && urlToUse.isEmpty
+        if isDirectATSLink {
+            return false
+        }
+        
+        if let result = detectionResult,
+           (result.confidence == .likely || result.confidence == .certain),
+           result.source?.isSupported ?? false {
+            return false
+        }
+        
+        if !urlToUse.isEmpty {
+            return false
+        }
+        
+        return true
     }
     
     var body: some View {
@@ -224,7 +238,6 @@ struct AddBoardSection: View {
             TextField("Board URL (job listing page)", text: $newBoardURL)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: newBoardURL) { _ in
-                    // Reset detection when URL changes
                     detectionResult = nil
                     urlToUse = ""
                 }
@@ -392,7 +405,9 @@ struct AddBoardSection: View {
         
         Task {
             do {
-                let result = try await ATSDetectorService.shared.detectATS(from: url)
+                // Use enhanced detection instead
+                let result = try await ATSDetectorService.shared.detectATSEnhanced(from: url)
+                
                 await MainActor.run {
                     detectionResult = result
                     
@@ -436,7 +451,7 @@ struct AddBoardSection: View {
 }
 
 struct TestResultsView: View {
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -472,7 +487,7 @@ struct TestResultsView: View {
 
 struct ConfiguredBoardsSection: View {
     @Binding var testingBoardId: UUID?
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

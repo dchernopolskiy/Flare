@@ -7,7 +7,7 @@
 
 import Foundation
 
-actor AMDFetcher: JobFetcherProtocol {
+actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     private let baseURL = "https://careers.amd.com/api/jobs"
     
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
@@ -32,8 +32,8 @@ actor AMDFetcher: JobFetcherProtocol {
             if pageJobs.count < pageSize {
                 break
             }
-            
-            try await Task.sleep(nanoseconds: 500_000_000)
+
+            try await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
         
         return allJobs
@@ -101,7 +101,6 @@ actor AMDFetcher: JobFetcherProtocol {
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
         
-        // Better error handling for decoding
         let decoder = JSONDecoder()
         let amdResponse: AMDResponse
         do {
@@ -120,7 +119,6 @@ actor AMDFetcher: JobFetcherProtocol {
             throw FetchError.decodingError(details: "Failed to decode AMD response: \(error.localizedDescription)")
         }
         
-        // Convert jobs with validation
         let jobs = amdResponse.jobs.enumerated().compactMap { (index, amdJobWrapper) -> Job? in
             convertAMDJob(amdJobWrapper, index: index)
         }
@@ -128,11 +126,9 @@ actor AMDFetcher: JobFetcherProtocol {
         return jobs
     }
     
-    // Updated conversion with validation
     private func convertAMDJob(_ amdJobWrapper: AMDJobWrapper, index: Int) -> Job? {
         let jobData = amdJobWrapper.data
         
-        // Validate required fields
         guard !jobData.title.isEmpty else {
             print("🔴”´ [AMD]¸ Skipping job at index \(index): empty title")
             return nil
@@ -169,7 +165,9 @@ actor AMDFetcher: JobFetcherProtocol {
             companyName: "AMD",
             department: jobData.category?.first,
             category: nil,
-            firstSeenDate: Date()
+            firstSeenDate: Date(),
+            originalPostingDate: nil,
+            wasBumped: false
         )
     }
     

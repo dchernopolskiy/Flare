@@ -71,16 +71,16 @@ actor GreenhouseFetcher: JobFetcherProtocol {
             let titleKeywords = parseFilterString(titleFilter)
             let locationKeywords = parseFilterString(locationFilter)
             
-            print("🌱 [Greenhouse] Applying filters - Title keywords: \(titleKeywords), Location keywords: \(locationKeywords)")
+            print("[Greenhouse] Applying filters - Title keywords: \(titleKeywords), Location keywords: \(locationKeywords)")
 
             let jobs = decoded.jobs.enumerated().compactMap { (index, ghJob) -> Job? in
                 guard !ghJob.title.isEmpty else {
-                    print("🌱 [Greenhouse]¸ Skipping job at index \(index): empty title")
+                    print("[Greenhouse] Skipping job at index \(index): empty title")
                     return nil
                 }
                 
                 guard !ghJob.absolute_url.isEmpty else {
-                    print("🌱 [Greenhouse]¸ Skipping job '\(ghJob.title)' at index \(index): empty URL")
+                    print("[Greenhouse] Skipping job '\(ghJob.title)' at index \(index): empty URL")
                     return nil
                 }
                 
@@ -106,7 +106,7 @@ actor GreenhouseFetcher: JobFetcherProtocol {
                         title.localizedCaseInsensitiveContains(keyword)
                     }
                     if !titleMatches {
-                        print("🌱 [Greenhouse] Filtered out by title: '\(title)' doesn't match any of \(titleKeywords)")
+                        print("[Greenhouse] Filtered out by title: '\(title)' doesn't match any of \(titleKeywords)")
                         return nil
                     }
                 }
@@ -116,7 +116,7 @@ actor GreenhouseFetcher: JobFetcherProtocol {
                         location.localizedCaseInsensitiveContains(keyword)
                     }
                     if !locationMatches {
-                        print("🌱 [Greenhouse] Filtered out by location: '\(location)' doesn't match any of \(locationKeywords)")
+                        print("[Greenhouse] Filtered out by location: '\(location)' doesn't match any of \(locationKeywords)")
                         return nil
                     }
                 }
@@ -135,23 +135,25 @@ actor GreenhouseFetcher: JobFetcherProtocol {
                     companyName: extractCompanyName(from: url),
                     department: ghJob.departments?.first?.name,
                     category: nil,
-                    firstSeenDate: Date()
+                    firstSeenDate: Date(),
+                    originalPostingDate: nil,
+                    wasBumped: false
                 )
             }
-            print("🌱  [Greenhouse] Parsed \(jobs.count) jobs from API (after filtering)")
+            print("[Greenhouse] Parsed \(jobs.count) jobs from API (after filtering)")
 
             return jobs
             
         } catch let DecodingError.keyNotFound(key, context) {
-            print("🌱  [Greenhouse] ❌ Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
+            print("[Greenhouse] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🌱 [Greenhouse] Response preview: \(responseString.prefix(500))")
+                print("[Greenhouse] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Greenhouse response")
         } catch {
-            print("🌱 [Greenhouse] ❌ Decoding error: \(error)")
+            print("[Greenhouse] Decoding error: \(error)")
             if let responseString = String(data: data, encoding: .utf8) {
-                print("🌱 [Greenhouse] Response preview: \(responseString.prefix(500))")
+                print("[Greenhouse] Response preview: \(responseString.prefix(500))")
             }
             throw FetchError.decodingError(details: "Failed to decode Greenhouse response: \(error.localizedDescription)")
         }

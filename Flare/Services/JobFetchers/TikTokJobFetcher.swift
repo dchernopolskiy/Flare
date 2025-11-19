@@ -10,18 +10,14 @@ import Foundation
 actor TikTokJobFetcher: JobFetcherProtocol {
     private let apiURL = URL(string: "https://api.lifeattiktok.com/api/v1/public/supplier/search/job/posts")!
     private let pageSize = 12
-    
-    private struct JobTrackingData: Codable {
-        let id: String
-        let firstSeenDate: Date
-    }
-    
+    private let trackingService = JobTrackingService.shared
+
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
         let locationCodes = LocationService.getTikTokLocationCodes(location)
         var allJobs: [Job] = []
         var currentOffset = 0
         var pageNumber = 1
-        let trackingData = await loadJobTrackingData()
+        let trackingData = await trackingService.loadTrackingData(for: "tiktok")
         let currentDate = Date()
         
         while allJobs.count < 5000 && pageNumber <= maxPages {
@@ -39,12 +35,12 @@ actor TikTokJobFetcher: JobFetcherProtocol {
                 let converted = pageJobs.enumerated().compactMap { (index, tikTokJob) -> Job? in
                     // Validate required fields
                     guard !tikTokJob.title.isEmpty else {
-                        print("[TikTok]¸ Skipping job at index \(index): empty title")
+                        print("[TikTok] Skipping job at index \(index): empty title")
                         return nil
                     }
                     
                     guard !tikTokJob.id.isEmpty else {
-                        print("[TikTok]¸ Skipping job at index \(index): empty ID")
+                        print("[TikTok] Skipping job at index \(index): empty ID")
                         return nil
                     }
                     
@@ -64,7 +60,9 @@ actor TikTokJobFetcher: JobFetcherProtocol {
                         companyName: "TikTok",
                         department: tikTokJob.job_category?.en_name,
                         category: tikTokJob.job_category?.i18n_name,
-                        firstSeenDate: firstSeenDate
+                        firstSeenDate: firstSeenDate,
+                        originalPostingDate: nil,
+                        wasBumped: false
                     )
                 }
                 
@@ -76,8 +74,8 @@ actor TikTokJobFetcher: JobFetcherProtocol {
                 
                 currentOffset += pageSize
                 pageNumber += 1
-                
-                try await Task.sleep(nanoseconds: 300_000_000)
+
+                try await Task.sleep(nanoseconds: FetchDelayConfig.fetchPageDelay)
             } catch let error as FetchError {
                 print("[TikTok] Fetch error on page \(pageNumber): \(error.errorDescription ?? "Unknown")")
                 throw error
@@ -90,8 +88,8 @@ actor TikTokJobFetcher: JobFetcherProtocol {
         guard !allJobs.isEmpty else {
             throw FetchError.noJobs
         }
-        
-        await saveJobTrackingData(allJobs, currentDate: currentDate)
+
+        await trackingService.saveTrackingData(allJobs, for: "tiktok", currentDate: currentDate, retentionDays: 60)
         return allJobs
     }
     
@@ -126,7 +124,6 @@ actor TikTokJobFetcher: JobFetcherProtocol {
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
         
-        // Try to decode with better error reporting
         let decoded: TikTokAPIResponse
         do {
             decoded = try JSONDecoder().decode(TikTokAPIResponse.self, from: data)
@@ -184,56 +181,6 @@ actor TikTokJobFetcher: JobFetcherProtocol {
             return key.capitalized
         }
         return nil
-    }
-    
-    // MARK: - Persistence with proper date tracking
-    
-    private func loadJobTrackingData() async -> [String: Date] {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("tiktokJobTracking.json")
-        
-        do {
-            let data = try Data(contentsOf: url)
-            let trackingData = try JSONDecoder().decode([JobTrackingData].self, from: data)
-            
-            var dict: [String: Date] = [:]
-            for item in trackingData {
-                dict[item.id] = item.firstSeenDate
-            }
-            
-            return dict
-        } catch {
-            return [:]
-        }
-    }
-    
-    private func saveJobTrackingData(_ jobs: [Job], currentDate: Date) async {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("tiktokJobTracking.json")
-        
-        do {
-            var existingData = await loadJobTrackingData()
-            
-            for job in jobs {
-                if existingData[job.id] == nil {
-                    existingData[job.id] = currentDate
-                }
-            }
-            
-            let trackingData = existingData.map { JobTrackingData(id: $0.key, firstSeenDate: $0.value) }
-            
-            // Keep only recent data (last 60 days)
-            let cutoffDate = Date().addingTimeInterval(-60 * 24 * 3600)
-            let recentData = trackingData.filter { $0.firstSeenDate > cutoffDate }
-            
-            let data = try JSONEncoder().encode(recentData)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
-        } catch {
-            print("🎵 [TikTok] Failed to save job tracking data: \(error)")
-        }
     }
 }
 

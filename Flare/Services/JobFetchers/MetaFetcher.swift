@@ -12,21 +12,17 @@ actor MetaFetcher: JobFetcherProtocol {
     private let graphqlURL = URL(string: "https://www.metacareers.com/graphql")!
     private let baseURL = URL(string: "https://www.metacareers.com/jobs")!
     private let resultsPerPage = 10
-    
-    private struct JobTrackingData: Codable {
-        let id: String
-        let firstSeenDate: Date
-    }
-    
+    private let trackingService = JobTrackingService.shared
+
     private struct PageTokens {
         let lsd: String
         let rev: String
         let hsi: String
         let dtsg: String?
     }
-    
+
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
-        let trackingData = await loadJobTrackingData()
+        let trackingData = await trackingService.loadTrackingData(for: "meta")
         let currentDate = Date()
         let offices = MetaLocationService.getMetaOffices(from: location)
         let tokens = try await extractPageTokens()
@@ -42,7 +38,7 @@ actor MetaFetcher: JobFetcherProtocol {
             throw FetchError.noJobs
         }
         
-        await saveJobTrackingData(allJobs, currentDate: currentDate)
+        await trackingService.saveTrackingData(allJobs, for: "meta", currentDate: currentDate, retentionDays: 30)
         return allJobs
     }
     
@@ -77,7 +73,7 @@ actor MetaFetcher: JobFetcherProtocol {
             }
         }
         
-        print("🔵 [Meta] Extracted tokens - lsd: \(lsd), rev: \(rev), hsi: \(hsi)")
+        print("[Meta] Extracted tokens - lsd: \(lsd), rev: \(rev), hsi: \(hsi)")
         
         return PageTokens(lsd: lsd, rev: rev, hsi: hsi, dtsg: nil)
     }
@@ -162,7 +158,7 @@ actor MetaFetcher: JobFetcherProtocol {
         
         request.httpBody = bodyString.data(using: .utf8)
         
-        print("🔵 [Meta] Making GraphQL request with \(offices.count) offices")
+        print("[Meta] Making GraphQL request with \(offices.count) offices")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -172,7 +168,7 @@ actor MetaFetcher: JobFetcherProtocol {
         
         if httpResponse.statusCode != 200 {
             let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
-            print("🔵 [Meta] ❌ HTTP \(httpResponse.statusCode) Response:")
+            print("[Meta] HTTP \(httpResponse.statusCode) Response:")
             print(responseString)
         }
         
@@ -183,11 +179,11 @@ actor MetaFetcher: JobFetcherProtocol {
         let decoded = try JSONDecoder().decode(MetaGraphQLResponse.self, from: data)
 
         guard let allJobs = decoded.data?.job_search_with_featured_jobs?.all_jobs else {
-            print("🔵 [Meta] No jobs found in response")
+            print("[Meta] No jobs found in response")
             return []
         }
 
-        print("🔵 [Meta] ✅ Found \(allJobs.count) jobs (firstSeenDate tracking enabled)")
+        print("[Meta] Found \(allJobs.count) jobs (firstSeenDate tracking enabled)")
         
         let jobs = allJobs.compactMap { metaJob -> Job? in
             let jobId = "meta-\(metaJob.id)"
@@ -208,61 +204,13 @@ actor MetaFetcher: JobFetcherProtocol {
                 companyName: "Meta",
                 department: subTeams.isEmpty ? nil : subTeams,
                 category: teams.isEmpty ? nil : teams,
-                firstSeenDate: firstSeenDate
+                firstSeenDate: firstSeenDate,
+                originalPostingDate: nil,  // Meta API doesn't provide dates
+                wasBumped: false  // Meta API doesn't support bump detection
             )
         }
 
         return jobs
-    }
-    
-    // MARK: - Persistence
-    
-    private func loadJobTrackingData() async -> [String: Date] {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("metaJobTracking.json")
-        
-        do {
-            let data = try Data(contentsOf: url)
-            let trackingData = try JSONDecoder().decode([JobTrackingData].self, from: data)
-            
-            var dict: [String: Date] = [:]
-            for item in trackingData {
-                dict[item.id] = item.firstSeenDate
-            }
-            
-            return dict
-        } catch {
-            return [:]
-        }
-    }
-    
-    private func saveJobTrackingData(_ jobs: [Job], currentDate: Date) async {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
-            .appendingPathComponent("metaJobTracking.json")
-        
-        do {
-            var existingData = await loadJobTrackingData()
-            
-            for job in jobs {
-                if existingData[job.id] == nil {
-                    existingData[job.id] = currentDate
-                }
-            }
-            
-            let trackingData = existingData.map { JobTrackingData(id: $0.key, firstSeenDate: $0.value) }
-            
-            // Keep only recent data (last 60 days)
-            let cutoffDate = Date().addingTimeInterval(-60 * 24 * 3600)
-            let recentData = trackingData.filter { $0.firstSeenDate > cutoffDate }
-            
-            let data = try JSONEncoder().encode(recentData)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
-        } catch {
-            print("[Meta] Failed to save job tracking data: \(error)")
-        }
     }
 }
 

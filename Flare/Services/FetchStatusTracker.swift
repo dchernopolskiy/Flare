@@ -178,6 +178,18 @@ struct FetchStatusView: View {
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(6)
         .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
+        .onAppear {
+            if tracker.hasErrors {
+                isExpanded = true
+            }
+        }
+        .onChange(of: tracker.hasErrors) { _, newValue in
+            if newValue && !isExpanded {
+                withAnimation(.spring(response: 0.3)) {
+                    isExpanded = true
+                }
+            }
+        }
     }
     
     private var sortedStatuses: [FetchStatusTracker.FetchStatus] {
@@ -249,4 +261,9 @@ struct FetchStatusRow: View {
 // MARK: - Job Fetcher Protocol
 protocol JobFetcherProtocol {
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job]
+}
+
+// MARK: - URL-based Job Fetcher Protocol
+protocol URLBasedJobFetcherProtocol {
+    func fetchJobs(from url: URL, titleFilter: String, locationFilter: String) async throws -> [Job]
 }

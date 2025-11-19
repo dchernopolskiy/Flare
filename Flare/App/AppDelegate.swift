@@ -10,17 +10,36 @@ import Foundation
 import Combine
 import UserNotifications
 import AppKit
+import Sparkle
 
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var popover = NSPopover()
+    private var updaterController: SPUStandardUpdaterController?
+    private var updateCheckTimer: Timer?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
+        setupSparkle()
+        setupUpdateCheckTimer()
+
+        // Listen for preference changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(updateCheckPreferenceChanged),
+            name: NSNotification.Name("UpdateCheckPreferenceChanged"),
+            object: nil
+        )
+
         Task {
             await JobManager.shared.startMonitoring()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        updateCheckTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -44,5 +63,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
         }
+    }
+
+    // MARK: - Sparkle Setup
+    private func setupSparkle() {
+        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    }
+
+    private func setupUpdateCheckTimer() {
+        Task { @MainActor in
+            guard JobManager.shared.autoCheckForUpdates else { return }
+
+            // Check for updates daily at a fixed time (e.g., 10 AM)
+            let calendar = Calendar.current
+            var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: Date())
+            components.hour = 10
+            components.minute = 0
+
+            guard let nextCheckTime = calendar.date(from: components) else { return }
+
+            // If we've passed 10 AM today, schedule for tomorrow
+            let scheduledTime = nextCheckTime > Date() ? nextCheckTime : calendar.date(byAdding: .day, value: 1, to: nextCheckTime)!
+
+            await MainActor.run {
+                self.updateCheckTimer = Timer(fire: scheduledTime, interval: 24 * 60 * 60, repeats: true) { [weak self] _ in
+                    self?.performDailyUpdateCheck()
+                }
+
+                if let timer = self.updateCheckTimer {
+                    RunLoop.main.add(timer, forMode: .common)
+                }
+            }
+        }
+    }
+
+    private func performDailyUpdateCheck() {
+        Task { @MainActor in
+            guard JobManager.shared.autoCheckForUpdates else { return }
+            await MainActor.run {
+                self.updaterController?.updater.checkForUpdatesInBackground()
+            }
+        }
+    }
+
+    func checkForUpdatesNow() {
+        updaterController?.checkForUpdates(nil)
+    }
+
+    @objc private func updateCheckPreferenceChanged() {
+        // Restart timer when preference changes
+        updateCheckTimer?.invalidate()
+        setupUpdateCheckTimer()
     }
 }

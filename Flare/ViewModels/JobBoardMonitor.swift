@@ -126,8 +126,8 @@ class JobBoardMonitor: ObservableObject {
                 errorMessages.append(errorMsg)
                 print("🌐 [JobBoard] ❌ \(errorMsg)")
             }
-            
-            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            try? await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
         
         // Set combined error message if any boards failed
@@ -196,10 +196,9 @@ class JobBoardMonitor: ObservableObject {
             return try await leverFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         case .workday:
             return try await workdayFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
-        case .workable, .jobvite, .bamboohr, .smartrecruiters, .jazzhr, .recruitee, .breezyhr:
-            throw FetchError.notImplemented(config.source.rawValue)
         default:
-            return []
+            let universalFetcher = UniversalJobFetcher()
+            return try await universalFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         }
     }
 }

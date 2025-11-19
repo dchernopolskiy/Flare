@@ -9,7 +9,7 @@
 import SwiftUI
 
 struct JobBoardConfigSheet: View {
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     @EnvironmentObject var jobManager: JobManager
     @State private var newBoardName = ""
     @State private var newBoardURL = ""
@@ -78,7 +78,7 @@ struct SheetHeader: View {
 
 struct ConfiguredBoardsList: View {
     @Binding var testingBoardId: UUID?
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -97,7 +97,7 @@ struct ConfiguredBoardsList: View {
 struct BoardConfigRow: View {
     let config: JobBoardConfig
     @Binding var testingBoardId: UUID?
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -331,7 +331,7 @@ struct SupportedPlatformsInfo: View {
 
 struct SheetFooter: View {
     let dismiss: () -> Void
-    @StateObject private var monitor = JobBoardMonitor.shared
+    @ObservedObject private var monitor = JobBoardMonitor.shared
     
     var body: some View {
         HStack {

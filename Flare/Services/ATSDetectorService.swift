@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import WebKit
 
 actor ATSDetectorService {
     static let shared = ATSDetectorService()
@@ -42,7 +43,7 @@ actor ATSDetectorService {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await URLSession.shared.data(for: request)
         guard let html = String(data: data, encoding: .utf8) else {
             print("[ATS Detector] Failed to decode HTML")
             throw FetchError.invalidResponse
@@ -111,9 +112,10 @@ actor ATSDetectorService {
         var lever: Int = 0
         var ashby: Int = 0
         var workday: Int = 0
+        var beamery: Int = 0
         
         var isEmpty: Bool {
-            greenhouse == 0 && lever == 0 && ashby == 0 && workday == 0
+            greenhouse == 0 && lever == 0 && ashby == 0 && workday == 0 && beamery == 0
         }
         
         var strongest: (source: String, count: Int)? {
@@ -121,7 +123,8 @@ actor ATSDetectorService {
                 ("greenhouse", greenhouse),
                 ("lever", lever),
                 ("ashby", ashby),
-                ("workday", workday)
+                ("workday", workday),
+                ("beamery", beamery)
             ]
             return all.max(by: { $0.1 < $1.1 })
         }
@@ -166,6 +169,16 @@ actor ATSDetectorService {
             }
         }
         
+        // Beamery patterns (often integrated with Workday)
+        let beameryKeywords = ["beamery", "pages.beamery.com", "flows.beamery.com", "beamery.referrers"]
+        for keyword in beameryKeywords {
+            if htmlLower.contains(keyword) {
+                indicators.beamery += 1
+                // If Beamery is detected, also increase Workday score as they're often used together
+                indicators.workday += 1
+            }
+        }
+        
         return indicators
     }
     
@@ -181,6 +194,7 @@ actor ATSDetectorService {
                 (indicators.greenhouse, { await self.probeGreenhouse(companySlug: companySlug) }),
                 (indicators.lever, { await self.probeLever(companySlug: companySlug) }),
                 (indicators.ashby, { await self.probeAshby(companySlug: companySlug) }),
+                (indicators.beamery + indicators.workday, { await self.probeWorkdayVariations(companySlug: companySlug, originalURL: originalURL) })
             ]
             
             for (count, probe) in probes.sorted(by: { $0.count > $1.count }) where count > 0 {
@@ -193,7 +207,6 @@ actor ATSDetectorService {
         if isCareersPage && indicators.isEmpty {
             print("[Probe] No indicators found, but looks like careers page. Trying fallback probes...")
             
-            // Try in order of popularity
             if let result = await probeGreenhouse(companySlug: companySlug) {
                 return result
             }
@@ -203,6 +216,10 @@ actor ATSDetectorService {
             }
             
             if let result = await probeAshby(companySlug: companySlug) {
+                return result
+            }
+            
+            if let result = await probeWorkdayVariations(companySlug: companySlug, originalURL: originalURL) {
                 return result
             }
             
@@ -372,6 +389,69 @@ actor ATSDetectorService {
         )
     }
     
+    // MARK: - Workday Probing
+    
+    private func probeWorkdayVariations(companySlug: String, originalURL: URL) async -> DetectionResult? {
+        // Try common Workday patterns
+        let workdayPatterns = [
+            "https://\(companySlug).wd1.myworkdayjobs.com/careers",
+            "https://\(companySlug).wd3.myworkdayjobs.com/careers",
+            "https://\(companySlug).wd5.myworkdayjobs.com/careers",
+            "https://\(companySlug).wd1.myworkdayjobs.com/en-US/careers",
+            "https://\(companySlug).wd3.myworkdayjobs.com/en-US/careers",
+            "https://\(companySlug).wd5.myworkdayjobs.com/en-US/careers"
+        ]
+        
+        for pattern in workdayPatterns {
+            print("[Workday Probe] Testing: \(pattern)")
+            if let result = try? await testWorkdayURL(pattern) {
+                print("[Workday Probe] Success!")
+                return result
+            }
+        }
+        
+        print("[Workday Probe] All patterns failed")
+        
+        if let host = originalURL.host, (host.contains("search-careers") || host.contains("careers")) {
+            return DetectionResult(
+                source: .workday,
+                confidence: .likely,
+                apiEndpoint: nil,
+                actualATSUrl: originalURL.absoluteString,
+                message: "Likely Workday/Beamery site (custom URL structure). Original URL will be used. If jobs don't load, try finding the actual myworkdayjobs.com URL in the page source."
+            )
+        }
+        
+        return nil
+    }
+    
+    private func testWorkdayURL(_ urlString: String) async throws -> DetectionResult {
+        guard let url = URL(string: urlString) else {
+            throw FetchError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 5
+        
+        let (data, httpResponse) = try await URLSession.shared.data(for: request)
+        
+        guard let response = httpResponse as? HTTPURLResponse,
+              (200...299).contains(response.statusCode) || response.statusCode == 301 || response.statusCode == 302,
+              let html = String(data: data, encoding: .utf8),
+              (html.contains("myworkdayjobs") || html.contains("workday")) else {
+            throw FetchError.invalidResponse
+        }
+        
+        return DetectionResult(
+            source: .workday,
+            confidence: .certain,
+            apiEndpoint: nil,
+            actualATSUrl: urlString,
+            message: "Found Workday job board: \(urlString)"
+        )
+    }
+    
     // MARK: - Helper Methods
     
     private func extractCompanySlug(from url: URL) -> String {
@@ -425,7 +505,7 @@ actor ATSDetectorService {
             (#"https?://[^"'\s]*\.jobvite\.com/[^"'\s]*"#, .jobvite),
         ]
         
-        for (index, (pattern, source)) in atsUrlPatterns.enumerated() {
+        for (_, (pattern, source)) in atsUrlPatterns.enumerated() {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
                let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
                let range = Range(match.range, in: html) {
@@ -443,7 +523,7 @@ actor ATSDetectorService {
                             confidence: .certain,
                             apiEndpoint: nil,
                             actualATSUrl: normalizedUrl,
-                            message: "✅ Found Workday ATS: \(workdayConfig.company).\(workdayConfig.instance).myworkdayjobs.com/\(workdayConfig.siteName)"
+                            message: "Found Workday ATS: \(workdayConfig.company).\(workdayConfig.instance).myworkdayjobs.com/\(workdayConfig.siteName)"
                         )
                     }
                 }
@@ -578,7 +658,7 @@ actor ATSDetectorService {
             #"["\']?(https?://[^"'\s]*\.myworkdayjobs\.com/[^"'\s]+)["\']?"#,
         ]
         
-        for (index, pattern) in jsonPatterns.enumerated() {
+        for (_, pattern) in jsonPatterns.enumerated() {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
                let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
                match.numberOfRanges > 1,
@@ -644,5 +724,245 @@ actor ATSDetectorService {
         }
         
         return nil
+    }
+}
+
+extension ATSDetectorService {
+    
+    // Add this method to enhance detection with JavaScript rendering
+    func detectATSEnhanced(from url: URL) async throws -> DetectionResult {
+        print("[ATS Detector] Starting enhanced detection for: \(url.absoluteString)")
+        
+        // Step 1: Try your existing quick detection first
+        if let quickMatch = JobSource.detectFromURL(url.absoluteString) {
+            print("[ATS Detector] Quick match found: \(quickMatch.rawValue)")
+            return DetectionResult(
+                source: quickMatch,
+                confidence: .certain,
+                apiEndpoint: nil,
+                actualATSUrl: url.absoluteString,
+                message: "Detected \(quickMatch.rawValue) from URL pattern"
+            )
+        }
+        
+        // Step 2: Try JavaScript rendering for dynamic content (NEW)
+        if let jsResult = await detectWithJavaScriptRendering(url: url) {
+            print("[ATS Detector] Found via JS rendering: \(jsResult.source?.rawValue ?? "unknown")")
+            return jsResult
+        }
+        
+        // Step 3: Fall back to your existing detection methods
+        return try await detectATS(from: url)
+    }
+    
+    // MARK: - JavaScript Rendering Detection (NEW)
+    @MainActor
+    private func detectWithJavaScriptRendering(url: URL) async -> DetectionResult? {
+        return await withCheckedContinuation { continuation in
+            let webView = WKWebView()
+            let navigationDelegate = ATSNavigationDelegate { detectedURL in
+                if let source = JobSource.detectFromURL(detectedURL) {
+                    let result = DetectionResult(
+                        source: source,
+                        confidence: .certain,
+                        apiEndpoint: nil,
+                        actualATSUrl: detectedURL,
+                        message: "Detected \(source.rawValue) via JavaScript rendering"
+                    )
+                    continuation.resume(returning: result)
+                }
+            }
+            
+            webView.navigationDelegate = navigationDelegate
+            
+            // Enhanced JavaScript to detect ATS systems hidden in JS
+            let jsDetectionCode = """
+            (function() {
+                const results = {
+                    workday: [],
+                    greenhouse: [],
+                    lever: [],
+                    ashby: [],
+                    beamery: [],
+                    found: false,
+                    workdayConfig: null
+                };
+                
+                // Check all scripts for ATS URLs
+                const scripts = document.querySelectorAll('script');
+                scripts.forEach(script => {
+                    const content = script.textContent || script.innerHTML || '';
+                    const src = script.src || '';
+                    
+                    // Workday patterns
+                    const workdayRegex = /https?:\\/\\/[^"'\\s]*\\.myworkdayjobs\\.com[^"'\\s]*/g;
+                    const workdayMatches = content.match(workdayRegex) || src.match(workdayRegex);
+                    if (workdayMatches) {
+                        results.workday = results.workday.concat(workdayMatches);
+                        results.found = true;
+                    }
+                    
+                    // Try to extract Workday config from Beamery
+                    const beameryConfigMatch = content.match(/wd[0-9]+\\.myworkdayjobs\\.com\\/(\\w+)\\/(\\w+)/);
+                    if (beameryConfigMatch) {
+                        results.workdayConfig = {
+                            company: beameryConfigMatch[0].split('.')[0],
+                            instance: beameryConfigMatch[0].match(/wd[0-9]+/)[0],
+                            siteName: beameryConfigMatch[2] || 'careers'
+                        };
+                    }
+                    
+                    // Also check for myworkdayjobs-impl.com
+                    const workdayImplRegex = /myworkdayjobs-impl\\.com/g;
+                    if (content.match(workdayImplRegex) || src.match(workdayImplRegex)) {
+                        results.workday.push('workday-impl-detected');
+                        results.found = true;
+                    }
+                    
+                    // Beamery patterns
+                    const beameryPatterns = ['beamery', 'pages.beamery.com', 'flows.beamery.com', 'beamery.referrers'];
+                    for (const pattern of beameryPatterns) {
+                        if (content.includes(pattern) || src.includes(pattern)) {
+                            results.beamery.push(pattern);
+                            results.found = true;
+                            // If Beamery is found, it's likely using Workday
+                            results.workday.push('via-beamery');
+                        }
+                    }
+                    
+                    // Greenhouse patterns
+                    const greenhouseRegex = /https?:\\/\\/[^"'\\s]*greenhouse\\.io[^"'\\s]*/g;
+                    const greenhouseMatches = content.match(greenhouseRegex) || src.match(greenhouseRegex);
+                    if (greenhouseMatches) {
+                        results.greenhouse = results.greenhouse.concat(greenhouseMatches);
+                        results.found = true;
+                    }
+                    
+                    // Lever patterns
+                    const leverRegex = /https?:\\/\\/[^"'\\s]*lever\\.co[^"'\\s]*/g;
+                    const leverMatches = content.match(leverRegex) || src.match(leverRegex);
+                    if (leverMatches) {
+                        results.lever = results.lever.concat(leverMatches);
+                        results.found = true;
+                    }
+                    
+                    // Ashby patterns
+                    const ashbyRegex = /https?:\\/\\/[^"'\\s]*ashbyhq\\.com[^"'\\s]*/g;
+                    const ashbyMatches = content.match(ashbyRegex) || src.match(ashbyRegex);
+                    if (ashbyMatches) {
+                        results.ashby = results.ashby.concat(ashbyMatches);
+                        results.found = true;
+                    }
+                });
+                
+                // Check iframes
+                const iframes = document.querySelectorAll('iframe');
+                iframes.forEach(iframe => {
+                    const src = iframe.src || '';
+                    if (src.includes('myworkdayjobs.com')) {
+                        results.workday.push(src);
+                        results.found = true;
+                    }
+                    if (src.includes('greenhouse.io')) {
+                        results.greenhouse.push(src);
+                        results.found = true;
+                    }
+                    if (src.includes('lever.co')) {
+                        results.lever.push(src);
+                        results.found = true;
+                    }
+                    if (src.includes('ashbyhq.com')) {
+                        results.ashby.push(src);
+                        results.found = true;
+                    }
+                    if (src.includes('beamery.com')) {
+                        results.beamery.push(src);
+                        results.found = true;
+                    }
+                });
+                
+                return JSON.stringify(results);
+            })();
+            """
+            
+            webView.load(URLRequest(url: url))
+            
+            // Wait for page to load and execute detection
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                webView.evaluateJavaScript(jsDetectionCode) { result, error in
+                    guard let jsonString = result as? String,
+                          let data = jsonString.data(using: .utf8),
+                          let detection = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    
+                    // Process results
+                    var detectedSource: JobSource?
+                    var detectedURL: String?
+                    
+                    if let beameryURLs = detection["beamery"] as? [String], !beameryURLs.isEmpty {
+                        detectedSource = .workday
+                        
+                        if let config = detection["workdayConfig"] as? [String: Any],
+                           let company = config["company"] as? String,
+                           let instance = config["instance"] as? String,
+                           let siteName = config["siteName"] as? String {
+                            detectedURL = "https://\(company).\(instance).myworkdayjobs.com/\(siteName)"
+                            print("🟢 [ATS] Extracted Workday config: \(detectedURL ?? "none")")
+                        } else {
+                            detectedURL = "Beamery-powered Workday site detected"
+                        }
+                    } else if let workdayURLs = detection["workday"] as? [String], !workdayURLs.isEmpty {
+                        detectedSource = .workday
+                        if let firstURL = workdayURLs.first(where: { $0.contains("myworkdayjobs.com") && !$0.contains("via-beamery") && !$0.contains("workday-impl") }) {
+                            detectedURL = firstURL
+                        } else {
+                            detectedURL = workdayURLs.first
+                        }
+                    } else if let greenhouseURLs = detection["greenhouse"] as? [String], !greenhouseURLs.isEmpty {
+                        detectedSource = .greenhouse
+                        detectedURL = greenhouseURLs.first
+                    } else if let leverURLs = detection["lever"] as? [String], !leverURLs.isEmpty {
+                        detectedSource = .lever
+                        detectedURL = leverURLs.first
+                    } else if let ashbyURLs = detection["ashby"] as? [String], !ashbyURLs.isEmpty {
+                        detectedSource = .ashby
+                        detectedURL = ashbyURLs.first
+                    }
+                    
+                    if let source = detectedSource {
+                        let result = DetectionResult(
+                            source: source,
+                            confidence: .certain,
+                            apiEndpoint: nil,
+                            actualATSUrl: detectedURL ?? url.absoluteString,
+                            message: "Detected \(source.rawValue) via JavaScript analysis"
+                        )
+                        continuation.resume(returning: result)
+                    } else {
+                        continuation.resume(returning: nil)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Navigation Delegate Helper
+class ATSNavigationDelegate: NSObject, WKNavigationDelegate {
+    let onRedirect: (String) -> Void
+    
+    init(onRedirect: @escaping (String) -> Void) {
+        self.onRedirect = onRedirect
+        super.init()
+    }
+    
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url {
+            onRedirect(url.absoluteString)
+        }
+        decisionHandler(.allow)
     }
 }

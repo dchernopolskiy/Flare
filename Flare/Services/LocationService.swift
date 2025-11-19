@@ -64,11 +64,11 @@ struct LocationService {
             "usa": "United States",
             "us": "United States",
             "united states": "United States",
-            "washington": "United States",
+            "washington state": "United States",
             "wa": "United States",
             "california": "United States",
             "ca": "United States",
-            "new york": "United States",
+            "new york state": "United States",
             "ny": "United States",
             "massachusetts": "United States",
             "ma": "United States",
@@ -248,21 +248,20 @@ extension LocationService {
     
     // MARK: - Microsoft API Mapping
     static func getMicrosoftLocationParams(_ locationString: String) -> [String] {
-        let countries = extractTargetCountries(from: locationString)
-        return countries.map { country in
-            switch country {
-            case "United States": return "United States"
-            case "Canada": return "Canada"
-            case "United Kingdom": return "United Kingdom"
-            case "Germany": return "Germany"
-            case "France": return "France"
-            case "India": return "India"
-            case "Australia": return "Australia"
-            case "Ireland": return "Ireland"
-            case "Netherlands": return "Netherlands"
-            case "Singapore": return "Singapore"
-            default: return country
-            }
+        guard !locationString.isEmpty else { return [] }
+        
+        // Parse individual locations from comma-separated string
+        let locations = locationString
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        
+        return locations.map { location in
+            let capitalized = location.split(separator: " ")
+                .map { $0.capitalized }
+                .joined(separator: " ")
+            
+            return capitalized
         }
     }
     
@@ -327,19 +326,19 @@ extension LocationService {
         "seattle": "United States",
         "san francisco": "United States",
         "sf": "United States",
-        "new york": "United States",
+        "new york city": "United States",
         "nyc": "United States",
         "los angeles": "United States",
         "la": "United States",
         "austin": "United States",
         "chicago": "United States",
         "boston": "United States",
-        "washington": "United States",
+        "washington dc": "United States",
         "dc": "United States",
         "california": "United States",
-        "washington": "United States",
+        "washington state": "United States",
         "texas": "United States",
-        "new york": "United States",
+        "new york state": "United States",
         "london": "United Kingdom",
         "dublin": "Ireland",
         "paris": "France",
