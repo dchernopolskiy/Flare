@@ -5,8 +5,7 @@ Search is performed using the job title and location.
 
 Current backlog: implement more ATS boards, address some performance issues, unify addition of new fetchers (so I don't have to add a new fetcher in 15 different places), but other than that it performs exactly what I needed for myself.
 
-Compile in xcode and run. Bundled version may or may not be coming in the future. 
-
+Bundle version is coming out as soon as the auto updater is properly tested.
 <p align="center">
 <img width="1722" height="1047" alt="image" src="https://github.com/user-attachments/assets/534c9e5c-5dab-4a6e-a742-d111f1d4ed44" />
 </p>
