@@ -10,11 +10,14 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var jobManager: JobManager
+    @EnvironmentObject var appDelegate: AppDelegate
     @State private var titleFilter = ""
     @State private var locationFilter = ""
     @State var refreshInterval = 30.0
     @State private var maxPagesToFetch = 5.0
     @State private var enableMicrosoft = true
+    @State private var enableApple = false
+    @State private var enableGoogle = false
     @State private var enableTikTok = false
     @State private var enableSnap = true
     @State private var enableAMD = true
@@ -47,7 +50,17 @@ struct SettingsView: View {
                                         .foregroundColor(.secondary)
                                 }
                             }
-                            
+
+                            Toggle(isOn: $enableApple) {
+                                HStack {
+                                    Image(systemName: JobSource.apple.icon)
+                                        .foregroundColor(JobSource.apple.color)
+                                    Text("Apple Careers")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
                             Toggle(isOn: $enableTikTok) {
                                 HStack {
                                     Image(systemName: JobSource.tiktok.icon)
@@ -80,14 +93,34 @@ struct SettingsView: View {
                             
                             Toggle(isOn: $enableMeta) {
                                 HStack {
-                                    Image(systemName: JobSource.amd.icon)
-                                        .foregroundColor(JobSource.amd.color)
+                                    Image(systemName: JobSource.meta.icon)
+                                        .foregroundColor(JobSource.meta.color)
                                     Text("Meta Careers")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
                             }
-                            
+
+                            Toggle(isOn: $enableApple) {
+                                HStack {
+                                    Image(systemName: JobSource.apple.icon)
+                                        .foregroundColor(JobSource.apple.color)
+                                    Text("Apple Careers")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Toggle(isOn: $enableGoogle) {
+                                HStack {
+                                    Image(systemName: JobSource.google.icon)
+                                        .foregroundColor(JobSource.google.color)
+                                    Text("Google Careers")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
                             Toggle(isOn: $enableCustomBoards) {
                                 HStack {
                                     Image(systemName: "globe")
@@ -307,6 +340,8 @@ struct SettingsView: View {
         refreshInterval = jobManager.refreshInterval
         maxPagesToFetch = Double(jobManager.maxPagesToFetch)
         enableMicrosoft = jobManager.enableMicrosoft
+        enableApple = jobManager.enableApple
+        enableGoogle = jobManager.enableGoogle
         enableTikTok = jobManager.enableTikTok
         enableSnap = jobManager.enableSnap
         enableAMD = jobManager.enableAMD
@@ -322,6 +357,8 @@ struct SettingsView: View {
         jobManager.refreshInterval = refreshInterval
         jobManager.maxPagesToFetch = Int(maxPagesToFetch)
         jobManager.enableMicrosoft = enableMicrosoft
+        jobManager.enableApple = enableApple
+        jobManager.enableGoogle = enableGoogle
         jobManager.enableTikTok = enableTikTok
         jobManager.enableSnap = enableSnap
         jobManager.enableAMD = enableAMD
@@ -336,9 +373,9 @@ struct SettingsView: View {
     }
 
     private func checkForUpdatesManually() {
-        if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
-            appDelegate.checkForUpdatesNow()
-        }
+        print("[Settings] Check for updates button pressed")
+        print("[Settings] Calling appDelegate.checkForUpdatesNow()")
+        appDelegate.checkForUpdatesNow()
     }
 }
 

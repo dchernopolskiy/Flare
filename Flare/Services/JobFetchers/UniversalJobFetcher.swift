@@ -46,6 +46,15 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         }
     }
     
+    // MARK: - Source Detection
+    private func detectSource(from url: URL) -> JobSource {
+        if let detected = JobSource.detectFromURL(url.absoluteString) {
+            return detected
+        }
+        // Default to greenhouse as fallback for custom boards
+        return .greenhouse
+    }
+
     // MARK: - Main Fetch Method
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         print("[Universal] Attempting to fetch from: \(url.absoluteString)")
@@ -142,22 +151,24 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                         return
                     }
                     
+                    let detectedSource = self.detectSource(from: url)
+
                     let jobs = extractedJobs.compactMap { jobDict -> Job? in
                         guard let title = jobDict["title"] as? String,
-                              let url = jobDict["url"] as? String,
+                              let jobUrl = jobDict["url"] as? String,
                               let id = jobDict["id"] as? String else { return nil }
-                        
-                        let companyName = URL(string: url).flatMap { self.extractCompanyName(from: $0) } ?? "Unknown Company"
-                        
+
+                        let companyName = URL(string: jobUrl).flatMap { self.extractCompanyName(from: $0) } ?? "Unknown Company"
+
                         return Job(
                             id: id,
                             title: title,
                             location: jobDict["location"] as? String ?? "Not specified",
                             postingDate: nil,
-                            url: url,
+                            url: jobUrl,
                             description: "",
                             workSiteFlexibility: nil,
-                            source: .greenhouse,
+                            source: detectedSource,
                             companyName: companyName,
                             department: nil,
                             category: nil,
@@ -245,7 +256,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                             url: jobURL,
                             description: "",
                             workSiteFlexibility: detectFlexibility(from: "\(title) \(location)"),
-                            source: .greenhouse,
+                            source: detectSource(from: baseURL),
                             companyName: extractCompanyName(from: baseURL),
                             department: nil,
                             category: nil,
@@ -379,7 +390,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 url: jobURL,
                 description: dict["description"] as? String ?? "",
                 workSiteFlexibility: detectFlexibility(from: "\(jobTitle) \(location)"),
-                source: .greenhouse,
+                source: detectSource(from: baseURL),
                 companyName: extractCompanyName(from: baseURL),
                 department: dict["department"] as? String,
                 category: dict["category"] as? String,

@@ -13,7 +13,7 @@ import AppKit
 import Sparkle
 
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var statusItem: NSStatusItem?
     var popover = NSPopover()
     private var updaterController: SPUStandardUpdaterController?
@@ -73,16 +73,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupUpdateCheckTimer() {
         Task { @MainActor in
             guard JobManager.shared.autoCheckForUpdates else { return }
-
-            // Check for updates daily at a fixed time (e.g., 10 AM)
             let calendar = Calendar.current
             var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: Date())
             components.hour = 10
             components.minute = 0
-
             guard let nextCheckTime = calendar.date(from: components) else { return }
 
-            // If we've passed 10 AM today, schedule for tomorrow
             let scheduledTime = nextCheckTime > Date() ? nextCheckTime : calendar.date(byAdding: .day, value: 1, to: nextCheckTime)!
 
             await MainActor.run {
@@ -107,11 +103,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func checkForUpdatesNow() {
-        updaterController?.checkForUpdates(nil)
+        if let controller = updaterController {
+            controller.updater.checkForUpdates()
+        } else {
+            print("[AppDelegate] ERROR: updaterController is nil")
+        }
     }
 
     @objc private func updateCheckPreferenceChanged() {
-        // Restart timer when preference changes
         updateCheckTimer?.invalidate()
         setupUpdateCheckTimer()
     }

@@ -198,7 +198,11 @@ class JobManager: ObservableObject {
     @Published var enableMicrosoft: Bool = UserDefaults.standard.bool(forKey: "enableMicrosoft") {
         didSet { UserDefaults.standard.set(enableMicrosoft, forKey: "enableMicrosoft") }
     }
-    
+
+    @Published var enableApple: Bool = UserDefaults.standard.bool(forKey: "enableApple") {
+        didSet { UserDefaults.standard.set(enableApple, forKey: "enableApple") }
+    }
+
     @Published var enableSnap: Bool = UserDefaults.standard.bool(forKey: "enableSnap") {
         didSet { UserDefaults.standard.set(enableSnap, forKey: "enableSnap") }
     }
@@ -209,6 +213,10 @@ class JobManager: ObservableObject {
     
     @Published var enableAMD: Bool = UserDefaults.standard.bool(forKey: "enableAMD") {
         didSet { UserDefaults.standard.set(enableAMD, forKey: "enableAMD") }
+    }
+
+    @Published var enableGoogle: Bool = UserDefaults.standard.bool(forKey: "enableGoogle") {
+        didSet { UserDefaults.standard.set(enableGoogle, forKey: "enableGoogle") }
     }
 
     @Published var enableCustomBoards: Bool = UserDefaults.standard.object(forKey: "enableCustomBoards") as? Bool ?? true {
@@ -229,6 +237,7 @@ class JobManager: ObservableObject {
     // MARK: - Private Properties
     private var fetchTimers: [JobSource: Timer] = [:]
     private var storedJobIds: Set<String> = []
+    private var notifiedJobIds: Set<String> = [] // Track jobs we've already notified about
     private let persistenceService = PersistenceService.shared
     private let notificationService = NotificationService.shared
     private var cancellables = Set<AnyCancellable>()
@@ -248,6 +257,8 @@ class JobManager: ObservableObject {
     
     // MARK: - Fetchers
     private let microsoftFetcher = MicrosoftJobFetcher()
+    private let appleFetcher = AppleFetcher()
+    private let googleFetcher = GoogleFetcher()
     private let tiktokFetcher = TikTokJobFetcher()
     private let snapFetcher = SnapFetcher()
     private let amdFetcher = AMDFetcher()
@@ -325,6 +336,26 @@ class JobManager: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        $enableApple
+            .sink { [weak self] enabled in
+                if enabled {
+                    self?.startMonitoringSource(.apple)
+                } else {
+                    self?.stopMonitoringSource(.apple)
+                }
+            }
+            .store(in: &cancellables)
+
+        $enableGoogle
+            .sink { [weak self] enabled in
+                if enabled {
+                    self?.startMonitoringSource(.google)
+                } else {
+                    self?.stopMonitoringSource(.google)
+                }
+            }
+            .store(in: &cancellables)
     }
     
     // MARK: - Public Methods
@@ -339,6 +370,9 @@ class JobManager: ObservableObject {
         if enableMicrosoft {
             startMonitoringSource(.microsoft)
         }
+        if enableApple {
+            startMonitoringSource(.apple)
+        }
         if enableTikTok {
             startMonitoringSource(.tiktok)
         }
@@ -351,6 +385,9 @@ class JobManager: ObservableObject {
 
         if enableMeta {
             startMonitoringSource(.meta)
+        }
+        if enableGoogle {
+            startMonitoringSource(.google)
         }
         if enableCustomBoards {
             await JobBoardMonitor.shared.startMonitoring()
@@ -398,7 +435,7 @@ class JobManager: ObservableObject {
                 }
             }
         } else {
-            sourceJobsMap[.microsoft] = []
+            sourceJobsMap[.microsoft] = jobsBySource[.microsoft] ?? []
         }
         
         if enableTikTok {
@@ -425,7 +462,7 @@ class JobManager: ObservableObject {
                 }
             }
         } else {
-            sourceJobsMap[.tiktok] = []
+            sourceJobsMap[.tiktok] = jobsBySource[.tiktok] ?? []
         }
         
         if enableSnap {
@@ -451,7 +488,7 @@ class JobManager: ObservableObject {
                 }
             }
         } else {
-            sourceJobsMap[.snap] = []
+            sourceJobsMap[.snap] = jobsBySource[.snap] ?? []
         }
         
         if enableAMD {
@@ -478,7 +515,7 @@ class JobManager: ObservableObject {
                 }
             }
         } else {
-            sourceJobsMap[.amd] = []
+            sourceJobsMap[.amd] = jobsBySource[.amd] ?? []
         }
         
         if enableMeta {
@@ -489,7 +526,7 @@ class JobManager: ObservableObject {
                 let newJobs = filterNewJobs(jobs)
                 allNewJobs.append(contentsOf: newJobs)
                 tracker.successFetch(source: "Meta", jobCount: jobs.count)
-                
+
                 Task {
                     try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "Meta")
@@ -498,15 +535,72 @@ class JobManager: ObservableObject {
                 print("[Meta] Error: \(error)")
                 lastError = "Meta: \(error.localizedDescription)"
                 tracker.failedFetch(source: "Meta", error: error)
-                
+
                 if let existingJobs = jobsBySource[.meta] {
                     sourceJobsMap[.meta] = existingJobs
                 }
             }
         } else {
-            sourceJobsMap[.meta] = []
+            sourceJobsMap[.meta] = jobsBySource[.meta] ?? []
         }
-        
+
+        // Apple
+        if enableApple {
+            tracker.startFetch(source: "Apple")
+            do {
+                let jobs = try await fetchFromSource(.apple)
+                sourceJobsMap[.apple] = jobs
+                let newJobs = filterNewJobs(jobs)
+                allNewJobs.append(contentsOf: newJobs)
+                fetchStatistics.appleJobs = jobs.count
+                tracker.successFetch(source: "Apple", jobCount: jobs.count)
+
+                Task {
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
+                    tracker.clearStatus(source: "Apple")
+                }
+            } catch {
+                print("[Apple] Error: \(error)")
+                lastError = "Apple: \(error.localizedDescription)"
+                tracker.failedFetch(source: "Apple", error: error)
+
+                if let existingJobs = jobsBySource[.apple] {
+                    sourceJobsMap[.apple] = existingJobs
+                }
+            }
+        } else {
+            sourceJobsMap[.apple] = jobsBySource[.apple] ?? []
+        }
+
+        // Google
+        if enableGoogle {
+            tracker.startFetch(source: "Google")
+            do {
+                let jobs = try await fetchFromSource(.google)
+                sourceJobsMap[.google] = jobs
+                let newJobs = filterNewJobs(jobs)
+                allNewJobs.append(contentsOf: newJobs)
+                fetchStatistics.googleJobs = jobs.count
+                tracker.successFetch(source: "Google", jobCount: jobs.count)
+
+                Task {
+                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
+                    tracker.clearStatus(source: "Google")
+                }
+            } catch {
+                print("[Google] Error: \(error)")
+                lastError = "Google: \(error.localizedDescription)"
+                tracker.failedFetch(source: "Google", error: error)
+
+                if let existingJobs = jobsBySource[.google] {
+                    sourceJobsMap[.google] = existingJobs
+                }
+            }
+        } else {
+            sourceJobsMap[.google] = jobsBySource[.google] ?? []
+        }
+
+        // Custom Boards
         if enableCustomBoards {
             tracker.startFetch(source: "Custom Boards")
             do {
@@ -518,13 +612,19 @@ class JobManager: ObservableObject {
                 allNewJobs.append(contentsOf: newJobs)
                 fetchStatistics.customBoardJobs = customJobs.count
                 tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
-                
+
+                // Propagate job board errors to main error display
+                if let boardError = await JobBoardMonitor.shared.lastError {
+                    lastError = boardError
+                }
+
                 Task {
                     try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
                     tracker.clearStatus(source: "Custom Boards")
                 }
             } catch {
                 print("[Custom Boards] Error: \(error)")
+                lastError = "Custom Boards: \(error.localizedDescription)"
                 tracker.failedFetch(source: "Custom Boards", error: error)
             }
         }
@@ -650,6 +750,19 @@ class JobManager: ObservableObject {
                 location: locationFilter,
                 maxPages: max(1, Int(maxPagesToFetch))
             )
+        case .google:
+            let baseURL = URL(string: "https://www.google.com/about/careers/applications/jobs/results")!
+            return try await googleFetcher.fetchJobs(
+                from: baseURL,
+                titleFilter: titleKeywords.joined(separator: " "),
+                locationFilter: locationFilter
+            )
+        case .apple:
+            return try await appleFetcher.fetchJobs(
+                titleKeywords: titleKeywords,
+                location: locationFilter,
+                maxPages: max(1, Int(maxPagesToFetch))
+            )
         case .greenhouse:
             return []
         default:
@@ -722,8 +835,14 @@ class JobManager: ObservableObject {
                     return Date().timeIntervalSince(job.firstSeenDate) <= 7200
                 }
             }
-            if !recentNewJobs.isEmpty {
-                await notificationService.sendGroupedNotification(for: recentNewJobs)
+
+            // Filter out jobs we've already sent notifications for
+            let jobsToNotify = recentNewJobs.filter { !notifiedJobIds.contains($0.id) }
+
+            if !jobsToNotify.isEmpty {
+                await notificationService.sendGroupedNotification(for: jobsToNotify)
+                // Mark these jobs as notified
+                jobsToNotify.forEach { notifiedJobIds.insert($0.id) }
             }
         }
         
@@ -771,6 +890,8 @@ struct FetchStatistics {
     var totalJobs: Int = 0
     var newJobs: Int = 0
     var microsoftJobs: Int = 0
+    var appleJobs: Int = 0
+    var googleJobs: Int = 0
     var tiktokJobs: Int = 0
     var snapJobs: Int = 0
     var metaJobs: Int = 0
@@ -783,6 +904,12 @@ struct FetchStatistics {
         
         if microsoftJobs > 0 {
             parts.append("Microsoft: \(microsoftJobs)")
+        }
+        if appleJobs > 0 {
+            parts.append("Apple: \(appleJobs)")
+        }
+        if googleJobs > 0 {
+            parts.append("Google: \(googleJobs)")
         }
         if tiktokJobs > 0 {
             parts.append("TikTok: \(tiktokJobs)")

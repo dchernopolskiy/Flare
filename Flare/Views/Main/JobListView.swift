@@ -15,7 +15,7 @@ struct JobListView: View {
     let isWindowMinimized: Bool
     
     @State private var searchText = ""
-    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday].filter { $0.isSupported })
+    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday].filter { $0.isSupported })
     @State private var showOnlyStarred = false
     @State private var showOnlyApplied = false
     @State private var cachedJobs: [Job] = []
@@ -32,9 +32,9 @@ struct JobListView: View {
                 showOnlyStarred: $showOnlyStarred,
                 showOnlyApplied: $showOnlyApplied
             )
-            
+
             Divider()
-            
+
             if jobManager.isLoading && cachedJobs.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -56,11 +56,6 @@ struct JobListView: View {
                                 Divider()
                             }
 
-                            if let error = jobManager.lastError {
-                                ErrorBanner(message: error)
-                                    .padding(.top, 8)
-                            }
-
                             if jobManager.isLoading {
                                 HStack {
                                     ProgressView()
@@ -74,6 +69,12 @@ struct JobListView: View {
                         }
                     }
                 }
+            }
+
+            // Error banner as permanent bottom pane
+            if let error = jobManager.lastError {
+                Divider()
+                ErrorBanner(message: error)
             }
         }
         .onAppear {

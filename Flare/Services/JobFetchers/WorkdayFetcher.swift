@@ -268,20 +268,20 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     }
     
     private func convertWorkdayJob(_ workdayJob: WorkdayJobPosting, config: WorkdayConfig, storedJobDates: [String: Date], currentDate: Date) -> Job? {
-        guard !workdayJob.title.isEmpty else {
+        guard let title = workdayJob.title, !title.isEmpty else {
             print("[Workday] Skipping job: empty title")
             return nil
         }
         
         guard !workdayJob.externalPath.isEmpty else {
-            print("[Workday] Skipping job '\(workdayJob.title)': empty external path")
+            print("[Workday] Skipping job '\(title)': empty external path")
             return nil
         }
         
         let jobId = workdayJob.bulletFields.first ?? UUID().uuidString
         
         let pathComponents = workdayJob.externalPath.components(separatedBy: "/")
-        let titleSlug = pathComponents.last?.components(separatedBy: "_").first ?? workdayJob.title
+        let titleSlug = pathComponents.last?.components(separatedBy: "_").first ?? title
             .replacingOccurrences(of: " ", with: "-")
             .replacingOccurrences(of: ",", with: "")
         
@@ -294,7 +294,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         
         return Job(
             id: fullJobId,
-            title: workdayJob.title,
+            title: title,
             location: workdayJob.locationsText,
             postingDate: postingDate,
             url: jobURL,
@@ -450,7 +450,7 @@ struct WorkdayResponse: Codable {
 }
 
 struct WorkdayJobPosting: Codable {
-    let title: String
+    let title: String?
     let externalPath: String
     let locationsText: String
     let postedOn: String

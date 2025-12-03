@@ -22,6 +22,7 @@ struct MSJobMonitorApp: App {
             ContentView()
                 .environmentObject(jobManager)
                 .environmentObject(boardMonitor)
+                .environmentObject(appDelegate)
                 .onAppear {
                     if isFirstLaunch {
                         jobManager.showSettings = true

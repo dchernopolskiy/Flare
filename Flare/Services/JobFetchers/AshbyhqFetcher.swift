@@ -54,7 +54,6 @@ actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 fullLocation += " (+ \(secondaryLocs))"
             }
             
-            // Use stored date if job was seen before, otherwise use current date
             let jobId = "ashby-\(job.id)"
             let firstSeenDate = storedJobDates[jobId] ?? currentDate
             

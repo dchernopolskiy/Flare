@@ -86,6 +86,8 @@ struct Job: Identifiable, Codable, Equatable {
         switch source {
         case .microsoft:
             return "Apply on Microsoft Careers"
+        case .apple:
+            return "Apply on Apple Careers"
         case .tiktok:
             return "Apply on Life at TikTok"
         case .greenhouse, .workable, .jobvite, .lever, .bamboohr,
@@ -97,6 +99,8 @@ struct Job: Identifiable, Codable, Equatable {
             return "Apply on Meta Careers"
         case .amd:
             return "Apply on AMD Careers"
+        case .google:
+            return "Apply on Google Careers"
         }
     }
 }
@@ -104,6 +108,8 @@ struct Job: Identifiable, Codable, Equatable {
 // MARK: - Job Source Enum
 enum JobSource: String, Codable, CaseIterable {
     case microsoft = "Microsoft"
+    case apple = "Apple"
+    case google = "Google"
     case tiktok = "TikTok"
     case snap = "Snap"
     case amd = "AMD"
@@ -123,6 +129,8 @@ enum JobSource: String, Codable, CaseIterable {
     var icon: String {
         switch self {
         case .microsoft: return "building.2.fill"
+        case .apple: return "applelogo"
+        case .google: return "g.circle.fill"
         case .tiktok: return "music.note.tv.fill"
         case .snap: return "camera.fill"
         case .amd: return "cpu.fill"
@@ -144,6 +152,8 @@ enum JobSource: String, Codable, CaseIterable {
     var color: Color {
         switch self {
         case .microsoft: return .indigo
+        case .apple: return .gray
+        case .google: return .blue
         case .tiktok: return .pink
         case .snap: return .yellow
         case .amd: return .red
@@ -164,9 +174,13 @@ enum JobSource: String, Codable, CaseIterable {
     
     static func detectFromURL(_ urlString: String) -> JobSource? {
         let lowercased = urlString.lowercased()
-        
+
         if lowercased.contains("careers.microsoft.com") {
             return .microsoft
+        } else if lowercased.contains("jobs.apple.com") {
+            return .apple
+        } else if lowercased.contains("google.com/about/careers") || lowercased.contains("careers.google.com") {
+            return .google
         } else if lowercased.contains("lifeattiktok.com") || lowercased.contains("tiktok.com") {
             return .tiktok
         } else if lowercased.contains("careers.snap.com") || lowercased.contains("snap.com/careers") {
@@ -337,7 +351,7 @@ class QualificationExtractor {
 extension JobSource {
     var isSupported: Bool {
         switch self {
-        case .microsoft, .tiktok, .greenhouse, .ashby, .lever, .snap, .amd, .meta, .workday:
+        case .microsoft, .apple, .google, .tiktok, .greenhouse, .ashby, .lever, .snap, .amd, .meta, .workday:
             return true
         default:
             return false
