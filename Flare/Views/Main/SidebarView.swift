@@ -167,10 +167,11 @@ struct SidebarButton: View {
                         .cornerRadius(8)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
             .cornerRadius(8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

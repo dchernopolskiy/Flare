@@ -613,9 +613,13 @@ class JobManager: ObservableObject {
                 fetchStatistics.customBoardJobs = customJobs.count
                 tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
 
-                // Propagate job board errors to main error display
-                if let boardError = await JobBoardMonitor.shared.lastError {
+                // Propagate job board errors to main error display (including nil to clear)
+                let boardError = await JobBoardMonitor.shared.lastError
+                if let boardError = boardError {
                     lastError = boardError
+                } else if lastError?.contains("Custom Boards") == true || lastError?.contains(":") == true {
+                    // Clear error if it was from a job board and boards are now successful
+                    lastError = nil
                 }
 
                 Task {
@@ -829,10 +833,16 @@ class JobManager: ObservableObject {
         
         if !newJobs.isEmpty {
             let recentNewJobs = newJobs.filter { job in
+                // Only notify about jobs with valid posting dates within 2 hours
+                // This prevents mass notifications when first adding a job board
                 if let postingDate = job.postingDate {
                     return Date().timeIntervalSince(postingDate) <= 7200 // 2 hours
                 } else {
-                    return Date().timeIntervalSince(job.firstSeenDate) <= 7200
+                    // For jobs without posting dates, only notify if we've seen them before
+                    // (i.e., firstSeenDate is not from this fetch cycle)
+                    let timeSinceFirstSeen = Date().timeIntervalSince(job.firstSeenDate)
+                    // If firstSeenDate is within the last minute, it's from this fetch - don't notify
+                    return timeSinceFirstSeen > 60 && timeSinceFirstSeen <= 7200
                 }
             }
 

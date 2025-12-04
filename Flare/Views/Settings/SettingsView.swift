@@ -101,16 +101,6 @@ struct SettingsView: View {
                                 }
                             }
 
-                            Toggle(isOn: $enableApple) {
-                                HStack {
-                                    Image(systemName: JobSource.apple.icon)
-                                        .foregroundColor(JobSource.apple.color)
-                                    Text("Apple Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
                             Toggle(isOn: $enableGoogle) {
                                 HStack {
                                     Image(systemName: JobSource.google.icon)
@@ -222,6 +212,37 @@ struct SettingsView: View {
                             }
                         }
                     }
+
+                    // Support Section
+                    SettingsSection(title: "Support") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Enjoying Flare?")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    Text("Support development with a coffee!")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                Button(action: {
+                                    if let url = URL(string: "https://buymeacoffee.com/korhonen") {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "cup.and.saucer.fill")
+                                        Text("Buy Me a Coffee")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.orange)
+                            }
+                        }
+                    }
                     
                     if jobManager.fetchStatistics.lastFetchTime != nil {
                         SettingsSection(title: "Statistics") {
@@ -230,6 +251,12 @@ struct SettingsView: View {
                                 StatRow(label: "New Jobs", value: "\(jobManager.fetchStatistics.newJobs)")
                                 if jobManager.fetchStatistics.microsoftJobs > 0 {
                                     StatRow(label: "Microsoft", value: "\(jobManager.fetchStatistics.microsoftJobs)")
+                                }
+                                if jobManager.fetchStatistics.appleJobs > 0 {
+                                    StatRow(label: "Apple", value: "\(jobManager.fetchStatistics.appleJobs)")
+                                }
+                                if jobManager.fetchStatistics.googleJobs > 0 {
+                                    StatRow(label: "Google", value: "\(jobManager.fetchStatistics.googleJobs)")
                                 }
                                 if jobManager.fetchStatistics.tiktokJobs > 0 {
                                     StatRow(label: "TikTok", value: "\(jobManager.fetchStatistics.tiktokJobs)")
@@ -240,7 +267,7 @@ struct SettingsView: View {
                                 if jobManager.fetchStatistics.amdJobs > 0 {
                                     StatRow(label: "AMD", value: "\(jobManager.fetchStatistics.amdJobs)")
                                 }
-                                if jobManager.fetchStatistics.amdJobs > 0 {
+                                if jobManager.fetchStatistics.metaJobs > 0 {
                                     StatRow(label: "Meta", value: "\(jobManager.fetchStatistics.metaJobs)")
                                 }
                                 if jobManager.fetchStatistics.customBoardJobs > 0 {

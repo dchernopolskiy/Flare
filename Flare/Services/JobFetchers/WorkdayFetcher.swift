@@ -18,7 +18,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     }
 
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
-        let config = try extractWorkdayConfig(from: url)
+        let config = try await extractWorkdayConfig(from: url)
         do {
             let storedJobDates = await trackingService.loadTrackingData(for: "workday_\(config.company)")
             let currentDate = Date()
@@ -315,22 +315,46 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     
     private func parsePostedDate(_ postedText: String) -> Date? {
         let lowercased = postedText.lowercased()
-        
+
+        // Handle "today"
         if lowercased.contains("today") {
             return Date()
         }
-        
+
+        // Handle "yesterday"
         if lowercased.contains("yesterday") {
             return Calendar.current.date(byAdding: .day, value: -1, to: Date())
         }
-        
+
+        // Handle "Posted X days ago" format
         let components = postedText.components(separatedBy: " ")
         if let index = components.firstIndex(where: { $0.lowercased() == "posted" }),
            index + 1 < components.count,
            let days = Int(components[index + 1]) {
             return Calendar.current.date(byAdding: .day, value: -days, to: Date())
         }
-        
+
+        // Try various date formats commonly used by Workday
+        let dateFormatters = [
+            "MM/dd/yyyy",      // 12/03/2024
+            "dd/MM/yyyy",      // 03/12/2024
+            "yyyy-MM-dd",      // 2024-12-03
+            "MMM dd, yyyy",    // Dec 03, 2024
+            "MMMM dd, yyyy",   // December 03, 2024
+            "dd MMM yyyy",     // 03 Dec 2024
+            "dd MMMM yyyy"     // 03 December 2024
+        ]
+
+        for formatString in dateFormatters {
+            let formatter = DateFormatter()
+            formatter.dateFormat = formatString
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+
+            if let date = formatter.date(from: postedText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return date
+            }
+        }
+
         return nil
     }
     
@@ -376,30 +400,102 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         return filtered
     }
     
-    private func extractWorkdayConfig(from url: URL) throws -> WorkdayConfig {
+    private func extractWorkdayConfig(from url: URL) async throws -> WorkdayConfig {
         guard let host = url.host else {
             throw FetchError.invalidURL
         }
-        
+
+        // Check if this is already a Workday URL (*.myworkdayjobs.com)
+        if host.contains("myworkdayjobs.com") {
+            return try extractFromWorkdayURL(url: url, host: host)
+        }
+
+        // For custom domains, fetch the page and extract config from HTML
+        print("[Workday] Custom domain detected: \(host), fetching HTML to extract config")
+        return try await extractFromHTML(url: url)
+    }
+
+    private func extractFromHTML(url: URL) async throws -> WorkdayConfig {
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw FetchError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            print("[Workday] HTTP error fetching page: \(httpResponse.statusCode)")
+            throw FetchError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw FetchError.decodingError(details: "Failed to decode HTML")
+        }
+
+        // Extract window.workday data using regex
+        let tenantRegex = try NSRegularExpression(pattern: #"tenant:\s*"([^"]+)""#)
+        let siteIdRegex = try NSRegularExpression(pattern: #"siteId:\s*"([^"]+)""#)
+
+        guard let tenantNSMatch = tenantRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let tenantRange = Range(tenantNSMatch.range(at: 1), in: html),
+              let siteIdNSMatch = siteIdRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let siteIdRange = Range(siteIdNSMatch.range(at: 1), in: html) else {
+            print("[Workday] Could not find window.workday data in HTML")
+            throw FetchError.decodingError(details: "Not a Workday site or unable to extract configuration")
+        }
+
+        let company = String(html[tenantRange])
+        let siteName = String(html[siteIdRange])
+
+        // Try to detect instance from final URL or default to wd1
+        var instance = "wd1"
+        if let finalURL = httpResponse.url?.host,
+           finalURL.contains("myworkdayjobs.com") {
+            let components = finalURL.components(separatedBy: ".")
+            if let wdComponent = components.first(where: { $0.hasPrefix("wd") }) {
+                instance = wdComponent
+            }
+        }
+
+        print("[Workday] Extracted from HTML - company: \(company), instance: \(instance), siteName: \(siteName)")
+        return WorkdayConfig(company: company, instance: instance, siteName: siteName)
+    }
+
+    private func extractFromWorkdayURL(url: URL, host: String) throws -> WorkdayConfig {
         let hostComponents = host.components(separatedBy: ".")
         guard hostComponents.count >= 3,
               hostComponents[1].hasPrefix("wd"),
               let instance = hostComponents.first(where: { $0.hasPrefix("wd") }) else {
+            print("[Workday] Invalid Workday URL format: \(host)")
             throw FetchError.invalidURL
         }
-        
+
         let company = hostComponents[0]
         let pathComponents = url.pathComponents.filter { $0 != "/" }
+
+        // Check for API path format: /wday/cxs/{company}/{siteName}
         if let cxsIndex = pathComponents.firstIndex(of: "cxs"),
            cxsIndex + 2 < pathComponents.count {
             let siteName = pathComponents[cxsIndex + 2]
+            print("[Workday] Extracted from API path - company: \(company), instance: \(instance), siteName: \(siteName)")
             return WorkdayConfig(company: company, instance: instance, siteName: siteName)
         }
-        
-        guard let siteName = pathComponents.first else {
+
+        // Standard format: /{locale}/{siteName} or /{siteName}
+        // Filter out common locale codes (en-US, en, etc.)
+        let locales = ["en-US", "en", "es", "fr", "de", "ja", "zh", "pt", "it"]
+        let nonLocaleComponents = pathComponents.filter { !locales.contains($0) }
+
+        guard let siteName = nonLocaleComponents.first else {
+            print("[Workday] No siteName found in path: \(url.path)")
             throw FetchError.invalidURL
         }
-        
+
+        print("[Workday] Extracted config - company: \(company), instance: \(instance), siteName: \(siteName)")
         return WorkdayConfig(company: company, instance: instance, siteName: siteName)
     }
     
