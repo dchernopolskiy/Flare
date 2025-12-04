@@ -10,7 +10,8 @@ import Foundation
 actor MicrosoftJobFetcher: JobFetcherProtocol {
     private let baseURL = "https://apply.careers.microsoft.com/api/pcsx/search"
     private let detailsBaseURL = "https://apply.careers.microsoft.com/api/pcsx/position_details"
-    
+    private var descriptionCache: [String: String] = [:] // positionId -> description
+
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int = 5) async throws -> [Job] {
         print("[Microsoft] Starting fetch with location: '\(location)'")
         let safeMaxPages = max(1, min(maxPages, 20))
@@ -74,9 +75,77 @@ actor MicrosoftJobFetcher: JobFetcherProtocol {
         await MainActor.run {
             JobManager.shared.loadingProgress = ""
         }
-        
+
         print("[Microsoft] Total jobs returned: \(allJobs.count)")
-        return allJobs
+
+        // Fetch detailed descriptions for all jobs
+        print("[Microsoft] Fetching detailed descriptions for \(allJobs.count) jobs")
+        var jobsWithDescriptions: [Job] = []
+
+        for (index, job) in allJobs.enumerated() {
+            let components = job.id.split(separator: "-")
+            guard components.count >= 2,
+                  components[0] == "microsoft",
+                  let positionId = components[1].split(separator: "-").first else {
+                print("[Microsoft] Invalid job ID format: \(job.id)")
+                jobsWithDescriptions.append(job)
+                continue
+            }
+
+            let positionIdString = String(positionId)
+
+            // Check cache first
+            let description: String?
+            if let cached = descriptionCache[positionIdString] {
+                description = cached
+                print("[Microsoft] Using cached description for \(positionIdString)")
+            } else {
+                // Fetch and cache
+                do {
+                    description = try await fetchJobDescription(positionId: positionIdString)
+                    if let desc = description {
+                        descriptionCache[positionIdString] = desc
+                    }
+                } catch {
+                    print("[Microsoft] Failed to fetch description for \(positionIdString): \(error)")
+                    description = nil
+                }
+            }
+
+            if let description = description {
+                let updatedJob = Job(
+                    id: job.id,
+                    title: job.title,
+                    location: job.location,
+                    postingDate: job.postingDate,
+                    url: job.url,
+                    description: description,
+                    workSiteFlexibility: job.workSiteFlexibility,
+                    source: job.source,
+                    companyName: job.companyName,
+                    department: job.department,
+                    category: job.category,
+                    firstSeenDate: job.firstSeenDate,
+                    originalPostingDate: job.originalPostingDate,
+                    wasBumped: job.wasBumped
+                )
+                jobsWithDescriptions.append(updatedJob)
+            } else {
+                jobsWithDescriptions.append(job)
+            }
+
+            if (index + 1) % 10 == 0 {
+                print("[Microsoft] Processed descriptions for \(index + 1)/\(allJobs.count) jobs")
+            }
+
+            // Only delay if we actually fetched (not cached)
+            if descriptionCache[positionIdString] == nil {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+            }
+        }
+
+        print("[Microsoft] Completed fetching descriptions for \(jobsWithDescriptions.count) jobs")
+        return jobsWithDescriptions
     }
     
     private func executeIndividualSearch(title: String, location: String, maxPages: Int) async throws -> [Job] {

@@ -542,7 +542,7 @@ struct SupportedPlatformsSection: View {
             
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(JobSource.allCases, id: \.self) { source in
-                    if source != .microsoft && source != .tiktok && source != .snap && source != .amd && source != .meta {
+                    if source != .microsoft && source != .apple && source != .google && source != .tiktok && source != .snap && source != .amd && source != .meta {
                         HStack {
                             Image(systemName: source.icon)
                                 .foregroundColor(source.color)

@@ -315,22 +315,46 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     
     private func parsePostedDate(_ postedText: String) -> Date? {
         let lowercased = postedText.lowercased()
-        
+
+        // Handle "today"
         if lowercased.contains("today") {
             return Date()
         }
-        
+
+        // Handle "yesterday"
         if lowercased.contains("yesterday") {
             return Calendar.current.date(byAdding: .day, value: -1, to: Date())
         }
-        
+
+        // Handle "Posted X days ago" format
         let components = postedText.components(separatedBy: " ")
         if let index = components.firstIndex(where: { $0.lowercased() == "posted" }),
            index + 1 < components.count,
            let days = Int(components[index + 1]) {
             return Calendar.current.date(byAdding: .day, value: -days, to: Date())
         }
-        
+
+        // Try various date formats commonly used by Workday
+        let dateFormatters = [
+            "MM/dd/yyyy",      // 12/03/2024
+            "dd/MM/yyyy",      // 03/12/2024
+            "yyyy-MM-dd",      // 2024-12-03
+            "MMM dd, yyyy",    // Dec 03, 2024
+            "MMMM dd, yyyy",   // December 03, 2024
+            "dd MMM yyyy",     // 03 Dec 2024
+            "dd MMMM yyyy"     // 03 December 2024
+        ]
+
+        for formatString in dateFormatters {
+            let formatter = DateFormatter()
+            formatter.dateFormat = formatString
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+
+            if let date = formatter.date(from: postedText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return date
+            }
+        }
+
         return nil
     }
     

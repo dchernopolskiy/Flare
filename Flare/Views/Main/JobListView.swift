@@ -121,7 +121,7 @@ struct JobListHeader: View {
     @Binding var showOnlyApplied: Bool
     
     private var supportedSources: [JobSource] {
-        return [.microsoft, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday]
+        return [.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday]
             .filter { $0.isSupported }
             .sorted { $0.rawValue < $1.rawValue }
     }
