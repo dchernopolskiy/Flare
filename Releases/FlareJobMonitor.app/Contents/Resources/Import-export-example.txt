@@ -1,0 +1,24 @@
+https://adobe.wd5.myworkdayjobs.com/external_experienced | Adobe | enabled
+https://boeing.wd1.myworkdayjobs.com/en-US/External_Careers | Boeing | enabled
+https://job-boards.greenhouse.io/metropolis | Metropolis | enabled
+https://job-boards.greenhouse.io/anthropic | Anthropic | enabled
+https://job-boards.greenhouse.io/discord | Discord | enabled
+https://job-boards.greenhouse.io/khanacademy/ | Khan Academy | enabled
+https://job-boards.greenhouse.io/deepmind | Deepmind | enabled
+https://job-boards.greenhouse.io/reddit/ | Reddit | enabled
+https://job-boards.greenhouse.io/tailscale | Tailscale | enabled
+https://job-boards.greenhouse.io/gitlab | Gitlab | enabled
+https://job-boards.greenhouse.io/crunchyroll | Crunchyroll | enabled
+https://job-boards.greenhouse.io/wikimedia | Wikimedia | enabled
+https://job-boards.greenhouse.io/runwayml | Runway | enabled
+https://jobs.ashbyhq.com/openai | openAI | enabled
+https://jobs.ashbyhq.com/Notion | Notion | enabled
+https://jobs.ashbyhq.com/elevenlabs | ElevenLabs | enabled
+https://jobs.ashbyhq.com/Character | Character AI | enabled
+https://jobs.ashbyhq.com/Replit | Replit | enabled
+https://jobs.ashbyhq.com/Ramp | Ramp (corp payments) | enabled
+https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs | Nvidia | enabled
+https://sec.wd3.myworkdayjobs.com/wday/cxs/sec/Samsung_Careers/jobs
+ | Samsung | enabled
+https://sec.wd3.myworkdayjobs.com/wday/cxs/sec/Samsung_Careers/jobs
+ | Samsung | enabled

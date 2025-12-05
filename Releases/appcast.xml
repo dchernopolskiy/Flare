@@ -6,9 +6,9 @@
             <title>1.0</title>
             <pubDate>Tue, 02 Dec 2025 15:08:52 -0800</pubDate>
             <sparkle:version>1</sparkle:version>
-            <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
+            <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.4</sparkle:minimumSystemVersion>
-            <enclosure url="https://dchernopolskiy.github.io/Flare/Releases/Flare-1.1.zip" length="2330539" type="application/octet-stream" sparkle:edSignature="A03kkQZ6wGBGtRMp9W/8L279j/GOK7efYXMexd9BJT7OOfhvSTIJsMNGIFSdfDgqIF8BMXmjPf//YuzyTTexDg=="/>
+            <enclosure url="https://dchernopolskiy.github.io/Flare/Releases/Flare-1.2.0.zip" length="2368912" type="application/octet-stream" sparkle:edSignature="mkg0z7huw/zZdON96CAoo2Xp1YCQ2tlTtaPnsq52UMZdyODAjTmCFRtuL9PBbqI1Es8KfN42tbMH85LDMGAZCg=="/>
         </item>
     </channel>
 </rss>
