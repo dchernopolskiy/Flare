@@ -28,10 +28,9 @@ struct JobBoardConfig: Identifiable, Codable {
     }
     
     init?(name: String, url: String, isEnabled: Bool = true) {
-        guard let detectedSource = JobSource.detectFromURL(url) else {
-            return nil 
-        }
-        
+        // Detect source from URL, or use .unknown for custom sites
+        let detectedSource = JobSource.detectFromURL(url) ?? .unknown
+
         self.name = name
         self.url = url
         self.source = detectedSource

@@ -759,6 +759,9 @@ extension ATSDetectorService {
     @MainActor
     private func detectWithJavaScriptRendering(url: URL) async -> DetectionResult? {
         return await withCheckedContinuation { continuation in
+            print("[ATS Detector] Starting JavaScript rendering detection")
+            var hasResumed = false
+
             let webView = WKWebView()
             let navigationDelegate = ATSNavigationDelegate { detectedURL in
                 if let source = JobSource.detectFromURL(detectedURL) {
@@ -769,10 +772,13 @@ extension ATSDetectorService {
                         actualATSUrl: detectedURL,
                         message: "Detected \(source.rawValue) via JavaScript rendering"
                     )
-                    continuation.resume(returning: result)
+                    if !hasResumed {
+                        hasResumed = true
+                        continuation.resume(returning: result)
+                    }
                 }
             }
-            
+
             webView.navigationDelegate = navigationDelegate
             
             // Enhanced JavaScript to detect ATS systems hidden in JS
@@ -886,14 +892,36 @@ extension ATSDetectorService {
             """
             
             webView.load(URLRequest(url: url))
-            
+
+            // Add timeout to prevent hanging
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                if !hasResumed {
+                    print("[ATS Detector] JavaScript rendering timed out after 10s")
+                    hasResumed = true
+                    continuation.resume(returning: nil)
+                }
+            }
+
             // Wait for page to load and execute detection
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 webView.evaluateJavaScript(jsDetectionCode) { result, error in
+                    if let error = error {
+                        print("[ATS Detector] JavaScript evaluation error: \(error.localizedDescription)")
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume(returning: nil)
+                        }
+                        return
+                    }
+
                     guard let jsonString = result as? String,
                           let data = jsonString.data(using: .utf8),
                           let detection = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        continuation.resume(returning: nil)
+                        print("[ATS Detector] Failed to parse JavaScript results")
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume(returning: nil)
+                        }
                         return
                     }
                     
@@ -939,9 +967,17 @@ extension ATSDetectorService {
                             actualATSUrl: detectedURL ?? url.absoluteString,
                             message: "Detected \(source.rawValue) via JavaScript analysis"
                         )
-                        continuation.resume(returning: result)
+                        print("[ATS Detector] Successfully detected \(source.rawValue) via JS")
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume(returning: result)
+                        }
                     } else {
-                        continuation.resume(returning: nil)
+                        print("[ATS Detector] No ATS detected via JavaScript")
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume(returning: nil)
+                        }
                     }
                 }
             }

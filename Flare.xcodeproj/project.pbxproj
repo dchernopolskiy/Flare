@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3718D7EA2EE83320005F0EDA /* SwiftLlama in Frameworks */ = {isa = PBXBuildFile; productRef = 3718D7E92EE83320005F0EDA /* SwiftLlama */; };
+		373582802EE8B02D003A7FA4 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 3735827F2EE8B02D003A7FA4 /* README.md */; };
 		379313C22EC566EA002FF2AB /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 379313C12EC566EA002FF2AB /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +30,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		3735827F2EE8B02D003A7FA4 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		374E44832E53D7650024ED16 /* FlareJobMonitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FlareJobMonitor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		374E44912E53D76B0024ED16 /* FlareJobMonitorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FlareJobMonitorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		374E449B2E53D76B0024ED16 /* FlareJobMonitorUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FlareJobMonitorUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -69,6 +72,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3718D7EA2EE83320005F0EDA /* SwiftLlama in Frameworks */,
 				379313C22EC566EA002FF2AB /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -93,6 +97,7 @@
 		374E447A2E53D7650024ED16 = {
 			isa = PBXGroup;
 			children = (
+				3735827F2EE8B02D003A7FA4 /* README.md */,
 				374E44852E53D7650024ED16 /* Flare */,
 				374E44942E53D76B0024ED16 /* FlareTests */,
 				374E449E2E53D76B0024ED16 /* FlareUITests */,
@@ -139,6 +144,7 @@
 			name = FlareJobMonitor;
 			packageProductDependencies = (
 				379313C12EC566EA002FF2AB /* Sparkle */,
+				3718D7E92EE83320005F0EDA /* SwiftLlama */,
 			);
 			productName = MSJobMonitor;
 			productReference = 374E44832E53D7650024ED16 /* FlareJobMonitor.app */;
@@ -224,6 +230,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				379313BF2EC489F3002FF2AB /* XCRemoteSwiftPackageReference "Sparkle" */,
+				3718D7E82EE832F4005F0EDA /* XCRemoteSwiftPackageReference "SwiftLlama" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 374E44842E53D7650024ED16 /* Products */;
@@ -242,6 +249,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				373582802EE8B02D003A7FA4 /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -621,6 +629,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		3718D7E82EE832F4005F0EDA /* XCRemoteSwiftPackageReference "SwiftLlama" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/dchernopolskiy/SwiftLlama/";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 		379313BF2EC489F3002FF2AB /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -632,6 +648,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		3718D7E92EE83320005F0EDA /* SwiftLlama */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3718D7E82EE832F4005F0EDA /* XCRemoteSwiftPackageReference "SwiftLlama" */;
+			productName = SwiftLlama;
+		};
 		379313C12EC566EA002FF2AB /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 379313BF2EC489F3002FF2AB /* XCRemoteSwiftPackageReference "Sparkle" */;

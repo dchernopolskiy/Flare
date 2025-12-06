@@ -101,6 +101,10 @@ struct Job: Identifiable, Codable, Equatable {
             return "Apply on AMD Careers"
         case .google:
             return "Apply on Google Careers"
+        case .amazon:
+            return "Apply on Amazon Jobs"
+        case .unknown:
+            return "Apply on the Company Website"
         }
     }
 }
@@ -110,6 +114,7 @@ enum JobSource: String, Codable, CaseIterable {
     case microsoft = "Microsoft"
     case apple = "Apple"
     case google = "Google"
+    case amazon = "Amazon"
     case tiktok = "TikTok"
     case snap = "Snap"
     case amd = "AMD"
@@ -125,12 +130,14 @@ enum JobSource: String, Codable, CaseIterable {
     case jazzhr = "JazzHR"
     case recruitee = "Recruitee"
     case breezyhr = "Breezy HR"
+    case unknown = "Custom"
     
     var icon: String {
         switch self {
         case .microsoft: return "building.2.fill"
         case .apple: return "applelogo"
         case .google: return "g.circle.fill"
+        case .amazon: return "shippingbox.fill"
         case .tiktok: return "music.note.tv.fill"
         case .snap: return "camera.fill"
         case .amd: return "cpu.fill"
@@ -146,6 +153,7 @@ enum JobSource: String, Codable, CaseIterable {
         case .jazzhr: return "music.note"
         case .recruitee: return "person.2.badge.plus"
         case .breezyhr: return "wind"
+        case .unknown: return "globe"
         }
     }
     
@@ -154,6 +162,7 @@ enum JobSource: String, Codable, CaseIterable {
         case .microsoft: return .indigo
         case .apple: return .gray
         case .google: return .blue
+        case .amazon: return .orange
         case .tiktok: return .pink
         case .snap: return .yellow
         case .amd: return .red
@@ -169,6 +178,7 @@ enum JobSource: String, Codable, CaseIterable {
         case .jazzhr: return .yellow
         case .recruitee: return .mint
         case .breezyhr: return .gray
+        case .unknown: return .orange
         }
     }
     
@@ -181,6 +191,8 @@ enum JobSource: String, Codable, CaseIterable {
             return .apple
         } else if lowercased.contains("google.com/about/careers") || lowercased.contains("careers.google.com") {
             return .google
+        } else if lowercased.contains("amazon.jobs") || lowercased.contains("hiring.amazon.com") {
+            return .amazon
         } else if lowercased.contains("lifeattiktok.com") || lowercased.contains("tiktok.com") {
             return .tiktok
         } else if lowercased.contains("careers.snap.com") || lowercased.contains("snap.com/careers") {
@@ -212,7 +224,8 @@ enum JobSource: String, Codable, CaseIterable {
         } else if lowercased.contains("breezy.hr") {
             return .breezyhr
         } else {
-            return nil
+            // Unknown/custom career site - will use SmartJobParser with LLM fallback
+            return .unknown
         }
     }
 }
@@ -351,7 +364,7 @@ class QualificationExtractor {
 extension JobSource {
     var isSupported: Bool {
         switch self {
-        case .microsoft, .apple, .google, .tiktok, .greenhouse, .ashby, .lever, .snap, .amd, .meta, .workday:
+        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse, .ashby, .lever, .snap, .amd, .meta, .workday, .unknown:
             return true
         default:
             return false

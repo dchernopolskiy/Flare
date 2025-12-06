@@ -234,6 +234,10 @@ class JobManager: ObservableObject {
         }
     }
 
+    @Published var enableAIParser: Bool = UserDefaults.standard.object(forKey: "enableAIParser") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(enableAIParser, forKey: "enableAIParser") }
+    }
+
     // MARK: - Private Properties
     private var fetchTimers: [JobSource: Timer] = [:]
     private var storedJobIds: Set<String> = []

@@ -205,7 +205,7 @@ struct AddBoardSection: View {
             return detectedSource?.isSupported ?? false
         } else {
             // Not a direct link - need to detect first and have a valid detected URL
-            return !urlToUse.isEmpty && detectedSource?.isSupported ?? false
+            return !urlToUse.isEmpty && (detectedSource?.isSupported ?? false)
         }
     }
     
@@ -275,12 +275,19 @@ struct AddBoardSection: View {
             // Status message for direct ATS links
             if isDirectATSLink, let source = detectedSource {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Direct \(source.rawValue) link detected - ready to add")
-                        .font(.caption)
-                        .foregroundColor(.green)
-                        .fontWeight(.medium)
+                    Image(systemName: source == .unknown ? "globe" : "checkmark.circle.fill")
+                        .foregroundColor(source == .unknown ? .orange : .green)
+                    if source == .unknown {
+                        Text("Custom career site - will use AI parsing if enabled in Settings")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fontWeight(.medium)
+                    } else {
+                        Text("Direct \(source.rawValue) link detected - ready to add")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                            .fontWeight(.medium)
+                    }
                     if !source.isSupported {
                         Text("(Coming soon)")
                             .font(.caption2)
@@ -289,11 +296,11 @@ struct AddBoardSection: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Color.green.opacity(0.1))
+                .background((source == .unknown ? Color.orange : Color.green).opacity(0.1))
                 .cornerRadius(6)
             }
             
-            Text("Currently supported: Greenhouse, Ashbyhq, Lever, Workday • Coming soon: Workable, Jobvite, and more")
+            Text("Supported: Greenhouse, Ashbyhq, Lever, Workday, and custom sites with AI parsing")
                 .font(.caption)
                 .foregroundColor(.secondary)
             

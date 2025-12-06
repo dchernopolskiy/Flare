@@ -64,7 +64,7 @@ actor JobTrackingService {
     private func getTrackingFileURL(for source: String) -> URL {
         let sanitizedSource = source.lowercased().replacingOccurrences(of: " ", with: "")
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
+            .appendingPathComponent("Flare")
             .appendingPathComponent("\(sanitizedSource)JobTracking.json")
     }
 }

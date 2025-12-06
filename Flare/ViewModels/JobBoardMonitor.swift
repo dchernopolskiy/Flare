@@ -23,6 +23,7 @@ class JobBoardMonitor: ObservableObject {
     private let ashbyFetcher = AshbyFetcher()
     private let leverFetcher = LeverFetcher()
     private let workdayFetcher = WorkdayFetcher()
+    private let smartParser = SmartJobParser()
     private var monitorTimer: Timer?
     
     private init() {
@@ -46,6 +47,12 @@ class JobBoardMonitor: ObservableObject {
     }
     
     func addBoardConfig(_ config: JobBoardConfig) {
+        // Prevent duplicates by checking URL
+        guard !boardConfigs.contains(where: { $0.url == config.url }) else {
+            print("[JobBoardMonitor] Board with URL '\(config.url)' already exists, skipping")
+            return
+        }
+
         boardConfigs.append(config)
         Task {
             await saveConfigs()
@@ -197,8 +204,8 @@ class JobBoardMonitor: ObservableObject {
         case .workday:
             return try await workdayFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         default:
-            let universalFetcher = UniversalJobFetcher()
-            return try await universalFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+            // Use SmartJobParser for unknown sources (falls back to LLM if enabled)
+            return await smartParser.parseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         }
     }
 }
