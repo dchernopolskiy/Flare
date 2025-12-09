@@ -17,6 +17,7 @@ class JobBoardMonitor: ObservableObject {
     @Published var lastError: String?
     @Published var showConfigSheet = false
     @Published var testResults: [UUID: String] = [:]
+    @Published var parsingStatus: [UUID: String] = [:]  // Detailed AI parsing status per board
     
     private let persistenceService = PersistenceService.shared
     private let greenhouseFetcher = GreenhouseFetcher()
@@ -193,7 +194,7 @@ class JobBoardMonitor: ObservableObject {
         guard let url = URL(string: config.url) else {
             throw FetchError.invalidURL
         }
-        
+
         switch config.source {
         case .greenhouse:
             return try await greenhouseFetcher.fetchGreenhouseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
@@ -205,7 +206,15 @@ class JobBoardMonitor: ObservableObject {
             return try await workdayFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         default:
             // Use SmartJobParser for unknown sources (falls back to LLM if enabled)
-            return await smartParser.parseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+            // Pass status callback to show parsing progress
+            return await smartParser.parseJobs(
+                from: url,
+                titleFilter: titleFilter,
+                locationFilter: locationFilter,
+                statusCallback: { [weak self] status in
+                    self?.parsingStatus[config.id] = status
+                }
+            )
         }
     }
 }

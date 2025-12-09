@@ -159,7 +159,7 @@ struct BoardConfigRow: View {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundColor(.red)
                             }
-                            
+
                             Text(testResult.replacingOccurrences(of: "✅ ", with: "").replacingOccurrences(of: "❌ ", with: ""))
                                 .font(.caption)
                                 .fontWeight(.medium)
@@ -175,6 +175,15 @@ struct BoardConfigRow: View {
                                       Color.red.opacity(0.1))
                         )
                     }
+                }
+
+                // AI Parsing Status
+                if let parsingStatus = monitor.parsingStatus[config.id] {
+                    Text(parsingStatus)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .padding(.top, 2)
                 }
             }
             
