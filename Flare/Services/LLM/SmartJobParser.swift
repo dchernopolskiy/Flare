@@ -1,5 +1,5 @@
 //
-//  ModelDownloader 2.swift
+//  SmartJobParser.swift
 //  Flare
 //
 //  Created by Dan on 12/9/25.
@@ -41,25 +41,7 @@ actor SmartJobParser {
             await updateStatus("❌ API/ATS detection failed", callback: statusCallback)
         }
 
-        // Step 2: Scan HTML source for embedded ATS platforms
-        do {
-            await updateStatus("🔎 Scanning source code for ATS platforms...", callback: statusCallback)
-            if let detectedPlatform = try await detectATSFromHTML(url: url) {
-                await updateStatus("✅ Detected \(detectedPlatform) in source code, retrying...", callback: statusCallback)
-                print("[SmartParser] Detected \(detectedPlatform) platform in HTML source")
-
-                // Try fetching with the detected platform
-                let jobs = try await universalFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
-                if !jobs.isEmpty {
-                    await updateStatus("✅ Found \(jobs.count) jobs via detected \(detectedPlatform)", callback: statusCallback)
-                    return jobs
-                }
-            }
-        } catch {
-            print("[SmartParser] HTML ATS detection failed: \(error.localizedDescription)")
-        }
-
-        // Step 3: Fall back to LLM if enabled
+        // Step 2: Fall back to LLM if enabled
         let aiParsingEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
         print("[SmartParser] AI parsing enabled: \(aiParsingEnabled)")
 
@@ -151,11 +133,22 @@ actor SmartJobParser {
         // Check if it's a SPA before rendering
         await updateStatus("🌐 Checking site structure...", callback: statusCallback)
         let initialHTML = try await fetchHTML(from: url)
-        let hasDataDiv = initialHTML.contains("id=\"root\"") || initialHTML.contains("id=\"app\"")
-        let isTiny = initialHTML.count < 10000
+
+        // Check for common SPA framework root elements
+        let spaPatterns = [
+            "id=\"root\"", "id='root'",           // React
+            "id=\"app\"", "id='app'",             // Vue, generic
+            "id=\"__next\"", "id='__next'",       // Next.js
+            "<app-root", "ng-app", "ng-version",  // Angular
+            "id=\"__nuxt\"", "id='__nuxt'",       // Nuxt.js
+            "data-reactroot",                      // React
+            "data-v-"                              // Vue
+        ]
+        let hasDataDiv = spaPatterns.contains { initialHTML.contains($0) }
+        let isTiny = initialHTML.count < 15000  // Increased threshold for SPAs with inline styles
 
         guard hasDataDiv && isTiny else {
-            print("[SmartParser] Not a SPA, skipping WebKit rendering")
+            print("[SmartParser] Not a SPA (hasDataDiv: \(hasDataDiv), size: \(initialHTML.count)), skipping WebKit rendering")
             return nil
         }
 
@@ -171,6 +164,7 @@ actor SmartJobParser {
         await updateStatus("📡 Found \(result.detectedAPICalls.count) API calls", callback: statusCallback)
 
         // Try each detected API call
+        var foundJobs: [Job]? = nil
         for (index, apiCall) in result.detectedAPICalls.enumerated() {
             print("[SmartParser] Trying API endpoint: \(apiCall.url)")
             await updateStatus("🔍 Analyzing API \(index + 1)/\(result.detectedAPICalls.count): \(URL(string: apiCall.url)?.host ?? "unknown")", callback: statusCallback)
@@ -184,9 +178,16 @@ actor SmartJobParser {
             ), !jobs.isEmpty {
                 print("[SmartParser] Successfully fetched \(jobs.count) jobs from intercepted API!")
                 await updateStatus("✅ Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
-                await llmParser.unloadModel()  // Free memory
-                return jobs
+                foundJobs = jobs
+                break
             }
+        }
+
+        // Always unload model to free ~2GB memory, regardless of success or failure
+        await llmParser.unloadModel()
+
+        if let jobs = foundJobs {
+            return jobs
         }
 
         // No jobs found - mark as failed
@@ -277,6 +278,30 @@ actor SmartJobParser {
 
             // Cache schema if successful
             if !filteredJobs.isEmpty {
+                // Use LLM-discovered pagination params if available, otherwise use defaults
+                let paginationType: PaginationType
+                let pageParam: String?
+                let pageSizeParam: String?
+
+                if let discoveredParam = schema.paginationParam?.lowercased() {
+                    if discoveredParam.contains("cursor") {
+                        paginationType = .cursor
+                        pageParam = schema.paginationParam
+                    } else if discoveredParam.contains("page") && !discoveredParam.contains("size") {
+                        paginationType = .page
+                        pageParam = schema.paginationParam
+                    } else {
+                        paginationType = .offset
+                        pageParam = schema.paginationParam
+                    }
+                    pageSizeParam = schema.pageSizeParam
+                } else {
+                    // Default fallback
+                    paginationType = .offset
+                    pageParam = "offset"
+                    pageSizeParam = "limit"
+                }
+
                 let discoveredSchema = DiscoveredAPISchema(
                     domain: domain,
                     endpoint: apiCall.url,
@@ -285,9 +310,9 @@ actor SmartJobParser {
                     requestHeaders: apiCall.headers,
                     responseStructure: schema,
                     paginationInfo: PaginationInfo(
-                        type: .offset,
-                        pageParam: "offset",
-                        pageSizeParam: "limit",
+                        type: paginationType,
+                        pageParam: pageParam,
+                        pageSizeParam: pageSizeParam,
                         maxPages: 3
                     ),
                     sortInfo: nil,
@@ -329,160 +354,6 @@ actor SmartJobParser {
         print("[SmartParser] Fetched HTML length: \(html.count) chars, SPA: \(hasDataDiv), Has job keywords: \(hasJobKeywords)")
 
         return html
-    }
-
-    /// Detect ATS platform by scanning HTML and JavaScript source code for platform signatures
-    private func detectATSFromHTML(url: URL) async throws -> String? {
-        let html = try await fetchHTML(from: url)
-
-        // Extract JavaScript file URLs from HTML
-        let jsURLs = extractJavaScriptURLs(from: html, baseURL: url)
-        print("[SmartParser] Found \(jsURLs.count) JavaScript files to scan")
-
-        // Collect all content to scan (HTML + JS files)
-        var contentToScan = html
-
-        // Fetch up to 5 JavaScript files (prioritize those with "bundle", "app", "main" in name)
-        let priorityJS = jsURLs.filter {
-            $0.absoluteString.contains("bundle") ||
-            $0.absoluteString.contains("app") ||
-            $0.absoluteString.contains("main") ||
-            $0.absoluteString.contains("vendor")
-        }
-        let jsToFetch = Array((priorityJS + jsURLs).prefix(5))
-
-        for jsURL in jsToFetch {
-            do {
-                let (data, _) = try await URLSession.shared.data(from: jsURL)
-                if let jsContent = String(data: data, encoding: .utf8) {
-                    contentToScan += "\n" + jsContent
-                    print("[SmartParser] Fetched JS file: \(jsURL.lastPathComponent) (\(jsContent.count) chars)")
-                }
-            } catch {
-                print("[SmartParser] Failed to fetch JS file \(jsURL.lastPathComponent): \(error)")
-            }
-        }
-
-        let lowercasedContent = contentToScan.lowercased()
-        print("[SmartParser] Scanning \(contentToScan.count) chars of HTML+JS content")
-
-        // Platform signatures to search for (in order of specificity)
-        let signatures: [(platform: String, patterns: [String])] = [
-            ("Workday", [
-                "myworkdayjobs.com",
-                "workday.com/api",
-                "workday-jobs",
-                "workdaycdn.com",
-                "wd5.myworkdayjobs",
-                "workday_service"
-            ]),
-            ("Greenhouse", [
-                "greenhouse.io",
-                "boards.greenhouse.io",
-                "greenhouse-jobs",
-                "boards-api.greenhouse.io",
-                "gh-job-board",
-                "greenhouse-embed"
-            ]),
-            ("Lever", [
-                "lever.co",
-                "jobs.lever.co",
-                "lever-jobs",
-                "lever-api",
-                "lever-job-board",
-                "leverapi"
-            ]),
-            ("Ashby", [
-                "ashbyhq.com",
-                "jobs.ashbyhq.com",
-                "ashby-jobs",
-                "ashby.com/api",
-                "ashby-embed"
-            ]),
-            ("SmartRecruiters", [
-                "smartrecruiters.com",
-                "jobs.smartrecruiters.com",
-                "smartrecruiters-jobs",
-                "smartrecruiters-api"
-            ]),
-            ("BambooHR", [
-                "bamboohr.com/jobs",
-                "bamboohr-jobs",
-                "bamboohr-api"
-            ]),
-            ("Jobvite", [
-                "jobvite.com",
-                "jobs.jobvite.com",
-                "jobvite-jobs",
-                "jobvite-api"
-            ])
-        ]
-
-        // Check each platform's signatures
-        for (platform, patterns) in signatures {
-            var matchCount = 0
-            var foundPatterns: [String] = []
-
-            for pattern in patterns {
-                if lowercasedContent.contains(pattern.lowercased()) {
-                    matchCount += 1
-                    foundPatterns.append(pattern)
-                }
-            }
-
-            if matchCount > 0 {
-                print("[SmartParser] Found \(matchCount) \(platform) signatures: \(foundPatterns.joined(separator: ", "))")
-            }
-
-            // If we found at least 2 signatures for a platform, it's a strong match
-            if matchCount >= 2 {
-                print("[SmartParser] ✅ Detected \(platform) platform (\(matchCount) signatures matched)")
-                return platform
-            }
-            // Or if we found 1 very specific signature (API endpoint)
-            else if matchCount == 1 {
-                for pattern in foundPatterns {
-                    if pattern.contains("api") || pattern.contains("boards.") || pattern.contains("-embed") {
-                        print("[SmartParser] ✅ Detected \(platform) platform (strong signature: \(pattern))")
-                        return platform
-                    }
-                }
-            }
-        }
-
-        print("[SmartParser] No ATS platform signatures detected in HTML+JS")
-        return nil
-    }
-
-    /// Extract JavaScript file URLs from HTML
-    private func extractJavaScriptURLs(from html: String, baseURL: URL) -> [URL] {
-        var jsURLs: [URL] = []
-
-        // Simple regex to find script src attributes
-        let scriptPattern = #"<script[^>]+src=["']([^"']+)["']"#
-        guard let regex = try? NSRegularExpression(pattern: scriptPattern, options: .caseInsensitive) else {
-            return []
-        }
-
-        let matches = regex.matches(in: html, options: [], range: NSRange(html.startIndex..., in: html))
-
-        for match in matches {
-            if match.numberOfRanges > 1,
-               let srcRange = Range(match.range(at: 1), in: html) {
-                let srcString = String(html[srcRange])
-
-                // Skip data URIs and very small inline scripts
-                guard !srcString.starts(with: "data:"),
-                      srcString.count > 10 else { continue }
-
-                // Convert to absolute URL
-                if let url = URL(string: srcString, relativeTo: baseURL)?.absoluteURL {
-                    jsURLs.append(url)
-                }
-            }
-        }
-
-        return jsURLs
     }
 
     /// Convert ParsedJob to Job model

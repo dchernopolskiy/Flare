@@ -1,5 +1,5 @@
 //
-//  ModelDownloader 2.swift
+//  LLMParser.swift
 //  Flare
 //
 //  Created by Dan on 12/9/25.
@@ -139,8 +139,8 @@ actor LLMParser {
         print("[LLM] Extracting jobs from HTML")
         let startTime = Date()
 
-        // Truncate HTML to fit within batch size
-        let truncatedHTML = String(html.prefix(1000))
+        // Truncate HTML intelligently - look for job-related content
+        let truncatedHTML = smartTruncateHTML(html, maxChars: 3500)
 
         let promptText = """
         Extract job listings from this HTML page.
@@ -226,7 +226,9 @@ actor LLMParser {
             "\"data\":",
             "\"items\":",
             "\"jobCards\":",
-            "\"positions\":"
+            "\"positions\":",
+            "\"postings\":",
+            "\"openings\":"
         ]
 
         var bestTruncation = String(json.prefix(maxChars))
@@ -236,8 +238,15 @@ actor LLMParser {
                 let startIndex = arrayStart.lowerBound
                 let endIndex = json.index(startIndex, offsetBy: min(maxChars, json.distance(from: startIndex, to: json.endIndex)))
 
-                var truncated = String(json[..<endIndex])
-                if let firstObjStart = truncated.range(of: "{", options: [], range: arrayStart.upperBound..<endIndex) {
+                let truncated = String(json[..<endIndex])
+
+                // Find the array opening bracket after the pattern
+                guard let arrayBracket = truncated.range(of: "[", options: [], range: arrayStart.upperBound..<truncated.endIndex) else {
+                    continue
+                }
+
+                // Find the first complete object in the array
+                if let firstObjStart = truncated.range(of: "{", options: [], range: arrayBracket.upperBound..<truncated.endIndex) {
                     var braceCount = 1
                     var searchIndex = firstObjStart.upperBound
 
@@ -248,17 +257,73 @@ actor LLMParser {
                         searchIndex = truncated.index(after: searchIndex)
 
                         if braceCount == 0 {
-                            truncated = String(truncated[..<searchIndex]) + "]}"
-                            bestTruncation = truncated
+                            // We found a complete object, now properly close the JSON
+                            // Count how many brackets we need to close from the start
+                            let prefix = String(json[..<arrayStart.lowerBound])
+                            let openBraces = prefix.filter { $0 == "{" }.count - prefix.filter { $0 == "}" }.count
+
+                            var result = String(truncated[..<searchIndex]) + "]"
+                            for _ in 0..<openBraces {
+                                result += "}"
+                            }
+                            bestTruncation = result
                             break
                         }
                     }
+                }
+
+                if bestTruncation != String(json.prefix(maxChars)) {
+                    break // Found a good truncation
                 }
             }
         }
 
         print("[LLM] Truncated JSON from \(json.count) to \(bestTruncation.count) chars")
         return bestTruncation
+    }
+
+    private func smartTruncateHTML(_ html: String, maxChars: Int) -> String {
+        guard html.count > maxChars else { return html }
+
+        // Try to find job-related content sections
+        let jobPatterns = [
+            "<div[^>]*class=\"[^\"]*job[^\"]*\"",
+            "<ul[^>]*class=\"[^\"]*job[^\"]*\"",
+            "<section[^>]*class=\"[^\"]*career[^\"]*\"",
+            "<div[^>]*class=\"[^\"]*position[^\"]*\"",
+            "<div[^>]*class=\"[^\"]*opening[^\"]*\"",
+            "<table[^>]*class=\"[^\"]*job[^\"]*\"",
+            "<div[^>]*id=\"jobs\"",
+            "<div[^>]*id=\"careers\""
+        ]
+
+        let lowercaseHTML = html.lowercased()
+
+        for pattern in jobPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: lowercaseHTML, range: NSRange(lowercaseHTML.startIndex..., in: lowercaseHTML)) {
+
+                let matchStart = match.range.lowerBound
+                let startIndex = html.index(html.startIndex, offsetBy: max(0, matchStart - 100))
+                let endIndex = html.index(startIndex, offsetBy: min(maxChars, html.distance(from: startIndex, to: html.endIndex)))
+
+                let truncated = String(html[startIndex..<endIndex])
+                print("[LLM] Truncated HTML from \(html.count) to \(truncated.count) chars (found job section)")
+                return truncated
+            }
+        }
+
+        // Fallback: skip past the <head> section if possible
+        if let bodyStart = html.range(of: "<body", options: .caseInsensitive) {
+            let startIndex = bodyStart.lowerBound
+            let endIndex = html.index(startIndex, offsetBy: min(maxChars, html.distance(from: startIndex, to: html.endIndex)))
+            let truncated = String(html[startIndex..<endIndex])
+            print("[LLM] Truncated HTML from \(html.count) to \(truncated.count) chars (from body)")
+            return truncated
+        }
+
+        print("[LLM] Truncated HTML from \(html.count) to \(maxChars) chars (simple prefix)")
+        return String(html.prefix(maxChars))
     }
 
     deinit {

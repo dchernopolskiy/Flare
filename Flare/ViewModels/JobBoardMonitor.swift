@@ -207,12 +207,13 @@ class JobBoardMonitor: ObservableObject {
         default:
             // Use SmartJobParser for unknown sources (falls back to LLM if enabled)
             // Pass status callback to show parsing progress
+            let configId = config.id
             return await smartParser.parseJobs(
                 from: url,
                 titleFilter: titleFilter,
                 locationFilter: locationFilter,
-                statusCallback: { [weak self] status in
-                    self?.parsingStatus[config.id] = status
+                statusCallback: { @MainActor [weak self] status in
+                    self?.parsingStatus[configId] = status
                 }
             )
         }

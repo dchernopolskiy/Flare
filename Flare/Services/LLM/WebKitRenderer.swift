@@ -1,5 +1,5 @@
 //
-//  ModelDownloader 2.swift
+//  WebKitRenderer.swift
 //  Flare
 //
 //  Created by Dan on 12/9/25.
@@ -191,7 +191,42 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                     if let url = call["url"] as? String,
                        let method = call["method"] as? String {
 
-                        if url.contains("job") || url.contains("search") || url.contains("api") || url.contains("graphql") {
+                        // Expanded list of job-related URL patterns
+                        let jobPatterns = [
+                            "job", "jobs",
+                            "career", "careers",
+                            "position", "positions",
+                            "opening", "openings",
+                            "requisition", "requisitions",
+                            "posting", "postings",
+                            "vacancy", "vacancies",
+                            "opportunity", "opportunities",
+                            "search",
+                            "api",
+                            "graphql"
+                        ]
+
+                        // Patterns to exclude (likely not job-related)
+                        let excludePatterns = [
+                            "analytics",
+                            "tracking",
+                            "telemetry",
+                            "beacon",
+                            "pixel",
+                            "ad",
+                            "ads",
+                            "facebook",
+                            "google-analytics",
+                            "gtag",
+                            "hotjar",
+                            "segment"
+                        ]
+
+                        let urlLower = url.lowercased()
+                        let isJobRelated = jobPatterns.contains { urlLower.contains($0) }
+                        let isExcluded = excludePatterns.contains { urlLower.contains($0) }
+
+                        if isJobRelated && !isExcluded {
                             let body = call["body"] as? String
                             let headers = call["headers"] as? [String: String]
 

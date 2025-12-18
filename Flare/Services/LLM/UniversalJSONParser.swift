@@ -1,5 +1,5 @@
 //
-//  ModelDownloader 2.swift
+//  UniversalJSONParser.swift
 //  Flare
 //
 //  Created by Dan on 12/9/25.
@@ -52,20 +52,34 @@ struct UniversalJSONParser {
             nil
         }
 
-        let url: String? = if let urlField = schema.urlField {
+        // Build URL from schema
+        var url: String? = nil
+        if let urlField = schema.urlField {
             if let urlStr = dict[urlField] as? String {
                 if urlStr.starts(with: "http") {
-                    urlStr
+                    url = urlStr
                 } else if let urlTemplate = schema.urlTemplate {
-                    urlTemplate.replacingOccurrences(of: "\\(\\w+\\)", with: urlStr, options: .regularExpression)
+                    // Replace {placeholder} style templates with the actual value
+                    // e.g., "https://example.com/job/{jobId}" with urlField="jobId"
+                    url = urlTemplate
+                        .replacingOccurrences(of: "{\(urlField)}", with: urlStr)
+                        .replacingOccurrences(of: "{id}", with: urlStr)  // Common fallback
+                        .replacingOccurrences(of: "{jobId}", with: urlStr)  // Common pattern
                 } else {
-                    baseURL.appendingPathComponent(urlStr).absoluteString
+                    url = baseURL.appendingPathComponent(urlStr).absoluteString
                 }
-            } else {
-                nil
+            } else if let urlId = dict[urlField] as? Int {
+                // Handle numeric IDs
+                let idStr = String(urlId)
+                if let urlTemplate = schema.urlTemplate {
+                    url = urlTemplate
+                        .replacingOccurrences(of: "{\(urlField)}", with: idStr)
+                        .replacingOccurrences(of: "{id}", with: idStr)
+                        .replacingOccurrences(of: "{jobId}", with: idStr)
+                } else {
+                    url = baseURL.appendingPathComponent(idStr).absoluteString
+                }
             }
-        } else {
-            nil
         }
 
         return ParsedJob(
