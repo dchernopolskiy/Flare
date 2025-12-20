@@ -127,6 +127,112 @@ actor LLMParser {
         }
     }
 
+    // MARK: - LLM-based ATS and API Detection
+
+    /// Result of LLM pattern detection
+    struct PatternDetectionResult {
+        let atsURL: String?           // Detected ATS URL (Workday, Greenhouse, etc.)
+        let atsType: String?          // Type of ATS detected
+        let apiEndpoint: String?      // Detected API endpoint
+        let apiType: String?          // Type of API (graphql, rest, etc.)
+        let confidence: String        // high, medium, low
+    }
+
+    /// Use LLM to detect ATS URLs and API endpoints in HTML/JS content
+    /// This catches patterns that regex might miss (e.g., obfuscated URLs, context-based detection)
+    func detectPatternsInContent(_ content: String, sourceURL: URL) async throws -> PatternDetectionResult? {
+        if !isLoaded {
+            try await loadModel()
+        }
+
+        guard let llama = llama else {
+            throw LLMError.modelNotLoaded
+        }
+
+        print("[LLM] Detecting ATS/API patterns in content...")
+        let startTime = Date()
+
+        // Truncate content intelligently
+        let truncatedContent = smartTruncateHTML(content, maxChars: 3500)
+
+        let promptText = """
+        Analyze this webpage content and find job board system URLs or API endpoints.
+
+        Look for:
+        1. ATS (Applicant Tracking System) URLs like:
+           - Workday: *.myworkdayjobs.com/*
+           - Greenhouse: boards.greenhouse.io/* or api.greenhouse.io/*
+           - Lever: jobs.lever.co/*
+           - Ashby: jobs.ashbyhq.com/*
+
+        2. Job API endpoints like:
+           - GraphQL endpoints with job queries
+           - REST APIs returning job data (/api/jobs, /careers/api, etc.)
+
+        Return ONLY a JSON object (no explanation):
+        {
+          "atsURL": "full URL if found or null",
+          "atsType": "workday|greenhouse|lever|ashby|null",
+          "apiEndpoint": "full API URL if found or null",
+          "apiType": "graphql|rest|null",
+          "confidence": "high|medium|low"
+        }
+
+        Content from \(sourceURL.host ?? "unknown"):
+        \(truncatedContent)
+
+        JSON:
+        """
+
+        let prompt = Prompt(
+            type: .llama3,
+            systemPrompt: "You are an expert at identifying job board systems and APIs in webpage source code.",
+            userMessage: promptText
+        )
+
+        let response = try await llama.start(for: prompt)
+        let inferenceTime = Date().timeIntervalSince(startTime)
+        print("[LLM] Pattern detection completed in \(String(format: "%.2f", inferenceTime))s")
+        print("[LLM] Pattern detection response: \(response.prefix(300))...")
+
+        // Parse response
+        guard let jsonStart = response.firstIndex(of: "{"),
+              let jsonEnd = response.lastIndex(of: "}") else {
+            print("[LLM] No JSON object found in pattern detection response")
+            return nil
+        }
+
+        let jsonString = String(response[jsonStart...jsonEnd])
+        guard let data = jsonString.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            print("[LLM] Failed to parse pattern detection JSON")
+            return nil
+        }
+
+        let result = PatternDetectionResult(
+            atsURL: parsed["atsURL"] as? String,
+            atsType: parsed["atsType"] as? String,
+            apiEndpoint: parsed["apiEndpoint"] as? String,
+            apiType: parsed["apiType"] as? String,
+            confidence: (parsed["confidence"] as? String) ?? "low"
+        )
+
+        // Log findings
+        if let atsURL = result.atsURL {
+            print("[LLM] Detected ATS URL: \(atsURL) (type: \(result.atsType ?? "unknown"), confidence: \(result.confidence))")
+        }
+        if let apiEndpoint = result.apiEndpoint {
+            print("[LLM] Detected API endpoint: \(apiEndpoint) (type: \(result.apiType ?? "unknown"), confidence: \(result.confidence))")
+        }
+
+        // Only return if we found something meaningful
+        if result.atsURL != nil || result.apiEndpoint != nil {
+            return result
+        }
+
+        return nil
+    }
+
     func extractJobs(from html: String, url: URL) async throws -> [ParsedJob] {
         if !isLoaded {
             try await loadModel()

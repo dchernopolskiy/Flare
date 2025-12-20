@@ -74,10 +74,116 @@ actor SmartJobParser {
                 return jobs
             }
 
-            // If WebKit approach didn't work, try direct HTML parsing with LLM
-            print("[SmartParser] WebKit approach failed, attempting direct HTML parsing...")
-            await updateStatus("📄 Analyzing HTML content with AI...", callback: statusCallback)
+            // WebKit approach didn't work - try regex-based script scanning first (fast)
+            print("[SmartParser] WebKit approach failed, scanning scripts for patterns...")
+            await updateStatus("🔍 Scanning page for job board patterns...", callback: statusCallback)
+
             let html = try await fetchHTML(from: url)
+
+            // Step 1: Fast regex-based scanning of <script> tags (no LLM needed)
+            let scanResult = scanScriptsForPatterns(in: html)
+
+            // Check if we found ATS URLs via regex
+            if let firstATSURL = scanResult.atsURLs.first,
+               let atsType = scanResult.atsType {
+                print("[SmartParser] Regex found ATS: \(atsType) at \(firstATSURL)")
+                await updateStatus("🎯 Found \(atsType.capitalized) ATS: \(firstATSURL)", callback: statusCallback)
+
+                if let detectedURL = URL(string: firstATSURL) {
+                    let jobs = try await fetchFromDetectedATS(
+                        url: detectedURL,
+                        atsType: atsType,
+                        titleFilter: titleFilter,
+                        locationFilter: locationFilter,
+                        statusCallback: statusCallback
+                    )
+                    if !jobs.isEmpty {
+                        return jobs
+                    }
+                }
+            }
+
+            // Check if we found API endpoints via regex
+            for endpoint in scanResult.apiEndpoints.prefix(3) {
+                print("[SmartParser] Trying regex-detected API: \(endpoint)")
+                if let jobs = await tryDetectedAPIEndpoint(
+                    endpoint: endpoint,
+                    apiType: "rest",
+                    baseURL: url,
+                    titleFilter: titleFilter,
+                    locationFilter: locationFilter,
+                    statusCallback: statusCallback
+                ) {
+                    return jobs
+                }
+            }
+
+            // Check if we found embedded JSON with job data
+            for json in scanResult.embeddedJSON {
+                print("[SmartParser] Trying embedded JSON (\(json.count) chars)...")
+                if let schema = try? await llmParser.discoverJSONSchema(from: json) {
+                    let parsedJobs = jsonParser.extractJobs(from: json, using: schema, baseURL: url)
+                    let jobs = parsedJobs.compactMap { convertToJob($0, url: url) }
+                    let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
+                    if !filteredJobs.isEmpty {
+                        await updateStatus("✅ Found \(filteredJobs.count) jobs in embedded JSON", callback: statusCallback)
+                        return filteredJobs
+                    }
+                }
+            }
+
+            // Step 2: If regex found nothing, use LLM for pattern detection
+            print("[SmartParser] Regex scan found nothing, trying LLM pattern detection...")
+            await updateStatus("🤖 AI analyzing page for hidden patterns...", callback: statusCallback)
+
+            if let patternResult = try await llmParser.detectPatternsInContent(html, sourceURL: url) {
+                // Found an ATS URL - return it for the caller to use dedicated fetcher
+                if let atsURL = patternResult.atsURL,
+                   let atsType = patternResult.atsType,
+                   atsType != "null",
+                   patternResult.confidence != "low" {
+                    print("[SmartParser] LLM detected ATS: \(atsType) at \(atsURL)")
+                    await updateStatus("🎯 AI found \(atsType.capitalized) ATS: \(atsURL)", callback: statusCallback)
+
+                    // Try to fetch from the detected ATS URL
+                    if let detectedURL = URL(string: atsURL) {
+                        let jobs = try await fetchFromDetectedATS(
+                            url: detectedURL,
+                            atsType: atsType,
+                            titleFilter: titleFilter,
+                            locationFilter: locationFilter,
+                            statusCallback: statusCallback
+                        )
+                        if !jobs.isEmpty {
+                            return jobs
+                        }
+                    }
+                }
+
+                // Found an API endpoint - try to fetch and parse it
+                if let apiEndpoint = patternResult.apiEndpoint,
+                   let apiType = patternResult.apiType,
+                   apiType != "null",
+                   patternResult.confidence != "low" {
+                    print("[SmartParser] LLM detected API: \(apiType) at \(apiEndpoint)")
+                    await updateStatus("🎯 AI found \(apiType.uppercased()) API endpoint", callback: statusCallback)
+
+                    if let jobs = await tryDetectedAPIEndpoint(
+                        endpoint: apiEndpoint,
+                        apiType: apiType,
+                        baseURL: url,
+                        titleFilter: titleFilter,
+                        locationFilter: locationFilter,
+                        statusCallback: statusCallback
+                    ) {
+                        return jobs
+                    }
+                }
+            }
+
+            // Step 2: Fall back to direct HTML extraction with LLM
+            print("[SmartParser] No patterns found, attempting direct HTML parsing...")
+            await updateStatus("📄 Analyzing HTML content with AI...", callback: statusCallback)
             let parsedJobs = try await llmParser.extractJobs(from: html, url: url)
             let jobs = parsedJobs.compactMap { convertToJob($0, url: url) }
             let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
@@ -95,6 +201,79 @@ actor SmartJobParser {
             await updateStatus("❌ AI parsing failed: \(error.localizedDescription)", callback: statusCallback)
             return []
         }
+    }
+
+    /// Fetch jobs from a detected ATS URL using the appropriate dedicated fetcher
+    private func fetchFromDetectedATS(url: URL, atsType: String, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async throws -> [Job] {
+        await updateStatus("⚡ Fetching from \(atsType.capitalized)...", callback: statusCallback)
+
+        switch atsType.lowercased() {
+        case "workday":
+            let fetcher = WorkdayFetcher()
+            return try await fetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case "greenhouse":
+            let fetcher = GreenhouseFetcher()
+            return try await fetcher.fetchGreenhouseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case "lever":
+            let fetcher = LeverFetcher()
+            return try await fetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case "ashby":
+            let fetcher = AshbyFetcher()
+            return try await fetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        default:
+            print("[SmartParser] Unknown ATS type: \(atsType)")
+            return []
+        }
+    }
+
+    /// Try to fetch jobs from a detected API endpoint
+    private func tryDetectedAPIEndpoint(endpoint: String, apiType: String, baseURL: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async -> [Job]? {
+        guard let apiURL = URL(string: endpoint, relativeTo: baseURL)?.absoluteURL else {
+            print("[SmartParser] Invalid API endpoint URL: \(endpoint)")
+            return nil
+        }
+
+        await updateStatus("📡 Fetching from detected API...", callback: statusCallback)
+
+        do {
+            var request = URLRequest(url: apiURL)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                print("[SmartParser] API request failed: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return nil
+            }
+
+            guard let jsonString = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+
+            print("[SmartParser] API response: \(jsonString.prefix(500))...")
+
+            // Use LLM to discover schema and parse
+            guard let schema = try await llmParser.discoverJSONSchema(from: jsonString) else {
+                print("[SmartParser] Failed to discover schema for API response")
+                return nil
+            }
+
+            let parsedJobs = jsonParser.extractJobs(from: jsonString, using: schema, baseURL: apiURL)
+            let jobs = parsedJobs.compactMap { convertToJob($0, url: apiURL) }
+            let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
+
+            if !filteredJobs.isEmpty {
+                await updateStatus("✅ Found \(filteredJobs.count) jobs from detected API", callback: statusCallback)
+                return filteredJobs
+            }
+
+        } catch {
+            print("[SmartParser] Failed to fetch from detected API: \(error)")
+        }
+
+        return nil
     }
 
     /// Try WebKit rendering with API interception (primary LLM approach for SPAs)
@@ -360,6 +539,132 @@ actor SmartJobParser {
         print("[SmartParser] Fetched HTML length: \(html.count) chars, SPA: \(hasDataDiv), Has job keywords: \(hasJobKeywords)")
 
         return html
+    }
+
+    // MARK: - Pre-LLM Script Scanning (Fast Regex-based Detection)
+
+    /// Result of scanning HTML for ATS/API patterns
+    struct ScriptScanResult {
+        let atsURLs: [String]           // Detected ATS URLs
+        let atsType: String?            // Primary ATS type detected
+        let apiEndpoints: [String]      // Detected API endpoints
+        let embeddedJSON: [String]      // JSON blobs found in scripts
+    }
+
+    /// Scan HTML <script> tags for ATS URLs, API endpoints, and embedded JSON
+    /// This is faster than LLM and catches patterns before we need AI
+    private func scanScriptsForPatterns(in html: String) -> ScriptScanResult {
+        var atsURLs: [String] = []
+        var apiEndpoints: [String] = []
+        var embeddedJSON: [String] = []
+        var detectedATSType: String?
+
+        // Extract all script tag contents
+        let scriptPattern = #"<script[^>]*>([\s\S]*?)</script>"#
+        let scriptRegex = try? NSRegularExpression(pattern: scriptPattern, options: .caseInsensitive)
+        let range = NSRange(html.startIndex..., in: html)
+
+        var allScriptContent = ""
+        scriptRegex?.enumerateMatches(in: html, range: range) { match, _, _ in
+            if let match = match, let contentRange = Range(match.range(at: 1), in: html) {
+                allScriptContent += String(html[contentRange]) + "\n"
+            }
+        }
+
+        // Also scan the full HTML for inline patterns
+        let contentToScan = allScriptContent + html
+
+        // ATS URL patterns (both normal and escaped formats)
+        let atsPatterns: [(pattern: String, type: String)] = [
+            (#"https?:(?:\\/\\/|//)[\w.-]*\.myworkdayjobs\.com[^\s"'<>]*"#, "workday"),
+            (#"https?:(?:\\/\\/|//)[^"'\s]*greenhouse\.io[^\s"'<>]*"#, "greenhouse"),
+            (#"https?:(?:\\/\\/|//)[^"'\s]*lever\.co[^\s"'<>]*"#, "lever"),
+            (#"https?:(?:\\/\\/|//)[^"'\s]*ashbyhq\.com[^\s"'<>]*"#, "ashby"),
+        ]
+
+        for (pattern, atsType) in atsPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let matches = regex.matches(in: contentToScan, range: NSRange(contentToScan.startIndex..., in: contentToScan))
+                for match in matches {
+                    if let range = Range(match.range, in: contentToScan) {
+                        var url = String(contentToScan[range])
+                        // Unescape escaped URLs
+                        url = url.replacingOccurrences(of: "\\/", with: "/")
+                        // Clean up trailing punctuation
+                        url = url.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`,;"))
+                        if !atsURLs.contains(url) && url.contains(".") {
+                            atsURLs.append(url)
+                            if detectedATSType == nil {
+                                detectedATSType = atsType
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // API endpoint patterns
+        let apiPatterns = [
+            #"["']?(https?://[^"'\s]*(?:/api/|/graphql|/v[0-9]+/)[^"'\s]*?)["']?"#,
+            #"["']?(/api/[^"'\s]+)["']?"#,
+            #"["']?(/graphql[^"'\s]*)["']?"#,
+            #"["']?(/careers/api[^"'\s]*)["']?"#,
+            #"["']?(/jobs/api[^"'\s]*)["']?"#,
+        ]
+
+        for pattern in apiPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let matches = regex.matches(in: contentToScan, range: NSRange(contentToScan.startIndex..., in: contentToScan))
+                for match in matches.prefix(5) { // Limit to first 5 matches
+                    let captureRange = match.numberOfRanges > 1 ? match.range(at: 1) : match.range
+                    if let range = Range(captureRange, in: contentToScan) {
+                        let endpoint = String(contentToScan[range])
+                        if !apiEndpoints.contains(endpoint) && endpoint.count > 5 {
+                            apiEndpoints.append(endpoint)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Look for embedded JSON with job data (window.__INITIAL_STATE__, etc.)
+        let jsonPatterns = [
+            #"window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});?"#,
+            #"window\.__data\s*=\s*(\{[\s\S]*?\});?"#,
+            #"window\.pageData\s*=\s*(\{[\s\S]*?\});?"#,
+            #""jobs"\s*:\s*(\[[\s\S]*?\])"#,
+            #""positions"\s*:\s*(\[[\s\S]*?\])"#,
+            #""openings"\s*:\s*(\[[\s\S]*?\])"#,
+        ]
+
+        for pattern in jsonPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let matches = regex.matches(in: allScriptContent, range: NSRange(allScriptContent.startIndex..., in: allScriptContent))
+                for match in matches.prefix(3) { // Limit to first 3 matches
+                    if match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: allScriptContent) {
+                        let json = String(allScriptContent[range])
+                        if json.count > 100 && json.count < 500000 { // Reasonable size
+                            embeddedJSON.append(json)
+                        }
+                    }
+                }
+            }
+        }
+
+        print("[SmartParser] Script scan: \(atsURLs.count) ATS URLs, \(apiEndpoints.count) API endpoints, \(embeddedJSON.count) JSON blobs")
+        if !atsURLs.isEmpty {
+            print("[SmartParser] Found ATS URLs: \(atsURLs.prefix(3))")
+        }
+        if !apiEndpoints.isEmpty {
+            print("[SmartParser] Found API endpoints: \(apiEndpoints.prefix(3))")
+        }
+
+        return ScriptScanResult(
+            atsURLs: atsURLs,
+            atsType: detectedATSType,
+            apiEndpoints: apiEndpoints,
+            embeddedJSON: embeddedJSON
+        )
     }
 
     /// Convert ParsedJob to Job model

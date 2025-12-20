@@ -196,7 +196,12 @@ struct AddBoardSection: View {
 
     private var isDirectATSLink: Bool {
         guard !newBoardURL.isEmpty else { return false }
-        return JobSource.detectFromURL(newBoardURL) != nil
+        // Only consider it a "direct" link if it's a known, supported ATS platform
+        // .unknown means we don't recognize it - needs detection
+        if let source = JobSource.detectFromURL(newBoardURL) {
+            return source != .unknown && source.isSupported
+        }
+        return false
     }
 
     /// Whether AI parsing is enabled in settings
@@ -387,20 +392,38 @@ struct AddBoardSection: View {
 
                 // Add & Test button - shown after detection or for direct ATS links
                 if !needsDetection || detectionCompleted {
-                    Button(action: addBoard) {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                            if isCustomSite {
-                                Text("Add with AI Parsing")
-                            } else {
-                                Text("Add & Test Board")
+                    if needsDetection {
+                        // Secondary style when detect button is also shown
+                        Button(action: addBoard) {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                if isCustomSite {
+                                    Text("Add with AI Parsing")
+                                } else {
+                                    Text("Add & Test Board")
+                                }
                             }
+                            .padding(.vertical, 8)
                         }
-                        .frame(maxWidth: needsDetection ? nil : .infinity)
-                        .padding(.vertical, 8)
+                        .buttonStyle(.bordered)
+                        .disabled(!canAddBoard || testingBoardId != nil)
+                    } else {
+                        // Primary style when it's the only button
+                        Button(action: addBoard) {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                if isCustomSite {
+                                    Text("Add with AI Parsing")
+                                } else {
+                                    Text("Add & Test Board")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canAddBoard || testingBoardId != nil)
                     }
-                    .buttonStyle(needsDetection ? .bordered : .borderedProminent)
-                    .disabled(!canAddBoard || testingBoardId != nil)
                 }
                 
                 if testingBoardId != nil {
