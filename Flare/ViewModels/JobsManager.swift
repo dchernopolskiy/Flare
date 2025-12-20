@@ -55,19 +55,23 @@ class JobManager: ObservableObject {
         var lastLocationFilter: String = ""
         var lastSourceFilter: Set<JobSource> = []
         var cachedJobs: [Job] = []
-        var lastComputedDate: Date = Date()
+        var lastComputedDate: Date = .distantPast  // Initialize to distant past so first call computes fresh
         var allJobsSnapshot: [Job] = []
 
         func isValid(titleFilter: String, locationFilter: String, sources: Set<JobSource>, allJobs: [Job]) -> Bool {
-            return lastTitleFilter == titleFilter &&
-                   lastLocationFilter == locationFilter &&
-                   lastSourceFilter == sources &&
-                   allJobsSnapshot.count == allJobs.count &&
-                   Date().timeIntervalSince(lastComputedDate) < 5
+            let filtersMatch = lastTitleFilter == titleFilter &&
+                               lastLocationFilter == locationFilter &&
+                               lastSourceFilter == sources
+            let jobsUnchanged = allJobsSnapshot.count == allJobs.count
+            let cacheNotExpired = Date().timeIntervalSince(lastComputedDate) < 5
+
+            // Cache is only valid if ALL conditions match
+            return filtersMatch && jobsUnchanged && cacheNotExpired
         }
 
         mutating func invalidate() {
             allJobsSnapshot = []
+            lastComputedDate = .distantPast
         }
     }
     
