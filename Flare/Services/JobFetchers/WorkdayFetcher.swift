@@ -73,7 +73,8 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         let limit = 20
         
         for page in 0..<5 {
-            
+            print("[Workday] Fetching page \(page + 1) for \(config.company) (offset: \(offset))...")
+
             let response = try await fetchJobsPage(
                 config: config,
                 session: session,
@@ -82,6 +83,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 locationIds: locationIds,
                 remoteType: nil
             )
+            print("[Workday] Page \(page + 1): received \(response.jobPostings.count) jobs")
             
             if response.jobPostings.isEmpty {
                 break
@@ -274,29 +276,30 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             return nil
         }
         
-        guard !workdayJob.externalPath.isEmpty else {
+        guard let externalPath = workdayJob.externalPath, !externalPath.isEmpty else {
             print("[Workday] Skipping job '\(title)': empty external path")
             return nil
         }
-        
-        let jobId = workdayJob.bulletFields.first ?? UUID().uuidString
-        
-        let pathComponents = workdayJob.externalPath.components(separatedBy: "/")
+
+        let bulletFields = workdayJob.bulletFields ?? []
+        let jobId = bulletFields.first ?? UUID().uuidString
+
+        let pathComponents = externalPath.components(separatedBy: "/")
         let titleSlug = pathComponents.last?.components(separatedBy: "_").first ?? title
             .replacingOccurrences(of: " ", with: "-")
             .replacingOccurrences(of: ",", with: "")
-        
+
         let jobURL = "https://\(config.company).\(config.instance).myworkdayjobs.com/en-US/\(config.siteName)/details/\(titleSlug)_\(jobId)"
-        
-        let postingDate = parsePostedDate(workdayJob.postedOn)
-        
+
+        let postingDate = parsePostedDate(workdayJob.postedOn ?? "")
+
         let fullJobId = "workday-\(jobId)"
         let firstSeenDate = storedJobDates[fullJobId] ?? currentDate
-        
+
         return Job(
             id: fullJobId,
             title: title,
-            location: workdayJob.locationsText,
+            location: workdayJob.locationsText ?? "Unknown",
             postingDate: postingDate,
             url: jobURL,
             description: "",
@@ -307,7 +310,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 .map { $0.capitalized }
                 .joined(separator: " "),
             department: nil,
-            category: workdayJob.bulletFields.count > 1 ? workdayJob.bulletFields[1] : nil,
+            category: bulletFields.count > 1 ? bulletFields[1] : nil,
             firstSeenDate: firstSeenDate,
             originalPostingDate: nil,
             wasBumped: false
@@ -548,11 +551,11 @@ struct WorkdayResponse: Codable {
 
 struct WorkdayJobPosting: Codable {
     let title: String?
-    let externalPath: String
-    let locationsText: String
-    let postedOn: String
+    let externalPath: String?  // Some postings may not have this field
+    let locationsText: String?
+    let postedOn: String?
     let remoteType: String?
-    let bulletFields: [String]
+    let bulletFields: [String]?
 }
 
 struct WorkdayFacet: Codable {
