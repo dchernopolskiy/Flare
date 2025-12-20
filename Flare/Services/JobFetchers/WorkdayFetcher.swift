@@ -102,9 +102,11 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             offset += limit
             try await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
-        
+
+        print("[Workday] Finished fetching pages, total jobs: \(allJobs.count)")
+
         let shouldApplyLocationFilter = locationIds.isEmpty && !locationFilter.isEmpty
-        
+
         let filteredJobs: [Job]
         if shouldApplyLocationFilter {
             let locationKeywords = parseFilterString(locationFilter, includeRemote: false)
@@ -113,12 +115,15 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 titleKeywords: [],
                 locationKeywords: locationKeywords
             )
+            print("[Workday] After location filter: \(filteredJobs.count) jobs")
         } else {
             filteredJobs = allJobs
         }
 
-            await trackingService.saveTrackingData(filteredJobs, for: "workday_\(config.company)", currentDate: currentDate, retentionDays: 30)
-            return filteredJobs
+        print("[Workday] Saving tracking data for \(filteredJobs.count) jobs...")
+        await trackingService.saveTrackingData(filteredJobs, for: "workday_\(config.company)", currentDate: currentDate, retentionDays: 30)
+        print("[Workday] Returning \(filteredJobs.count) jobs for \(config.company)")
+        return filteredJobs
         } catch {
             print("[Workday] Error in fetchJobs: \(error)")
             print("[Workday] Error type: \(type(of: error))")

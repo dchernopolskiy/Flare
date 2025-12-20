@@ -205,6 +205,65 @@ class JobBoardMonitor: ObservableObject {
             throw FetchError.invalidURL
         }
 
+        // Check if we have a previously detected ATS URL (e.g., Workday found via GTM)
+        // First check the config, then check the runtime cache
+        var detectedATSURL = config.detectedATSURL
+        var detectedATSType = config.detectedATSType
+
+        // Check runtime cache if not in config
+        var needsPersist = false
+        if detectedATSURL == nil, let domain = url.host {
+            if let cached = await DetectedATSCache.shared.get(for: domain) {
+                detectedATSURL = cached.atsURL
+                detectedATSType = cached.atsType
+                needsPersist = true  // Found in runtime cache but not in config - need to persist
+                print("[JobBoard] Found ATS in runtime cache: \(cached.atsType) at \(cached.atsURL)")
+            }
+        }
+
+        if let detectedATSURL = detectedATSURL,
+           let detectedATSType = detectedATSType,
+           let atsURL = URL(string: detectedATSURL) {
+            print("[JobBoard] Using cached ATS: \(detectedATSType) at \(detectedATSURL)")
+            parsingStatus[config.id] = "⚡ Fetching from \(detectedATSType.capitalized)..."
+            var jobs: [Job] = []
+            switch detectedATSType.lowercased() {
+            case "workday":
+                jobs = try await workdayFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
+            case "greenhouse":
+                jobs = try await greenhouseFetcher.fetchGreenhouseJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
+            case "lever":
+                jobs = try await leverFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
+            case "ashby":
+                jobs = try await ashbyFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
+            default:
+                break  // Fall through to normal detection
+            }
+            // Update status after fetch completes
+            if !jobs.isEmpty {
+                parsingStatus[config.id] = "✅ Found \(jobs.count) jobs"
+
+                // Persist to config if we found it in runtime cache but not in config
+                if needsPersist {
+                    var updatedConfig = config
+                    updatedConfig.detectedATSURL = detectedATSURL
+                    updatedConfig.detectedATSType = detectedATSType
+                    updateBoardConfig(updatedConfig)
+                    print("[JobBoard] Persisted detected ATS to config: \(detectedATSType) at \(detectedATSURL)")
+                }
+
+                // Clear status after a delay
+                let configId = config.id
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)  // 3 seconds
+                    self.parsingStatus.removeValue(forKey: configId)
+                }
+                return jobs
+            } else {
+                parsingStatus[config.id] = "❌ No jobs found"
+            }
+        }
+
         switch config.source {
         case .greenhouse:
             return try await greenhouseFetcher.fetchGreenhouseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
@@ -218,7 +277,7 @@ class JobBoardMonitor: ObservableObject {
             // Use SmartJobParser for unknown sources (falls back to LLM if enabled)
             // Pass status callback to show parsing progress
             let configId = config.id
-            return await smartParser.parseJobs(
+            let jobs = await smartParser.parseJobs(
                 from: url,
                 titleFilter: titleFilter,
                 locationFilter: locationFilter,
@@ -226,6 +285,20 @@ class JobBoardMonitor: ObservableObject {
                     self?.parsingStatus[configId] = status
                 }
             )
+
+            // After parsing, check if we detected an ATS URL and persist it to config
+            if !jobs.isEmpty, let domain = url.host {
+                if let cached = await DetectedATSCache.shared.get(for: domain) {
+                    // Persist detected ATS to config for future refreshes
+                    var updatedConfig = config
+                    updatedConfig.detectedATSURL = cached.atsURL
+                    updatedConfig.detectedATSType = cached.atsType
+                    updateBoardConfig(updatedConfig)
+                    print("[JobBoard] Persisted detected ATS to config: \(cached.atsType) at \(cached.atsURL)")
+                }
+            }
+
+            return jobs
         }
     }
 }

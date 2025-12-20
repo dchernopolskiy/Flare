@@ -143,7 +143,7 @@ struct SettingsView: View {
                                         .foregroundColor(.secondary)
                                 }
                             }
-                            .onChange(of: enableAIParser) { newValue in
+                            .onChange(of: enableAIParser) { _, newValue in
                                 if newValue {
                                     checkAndDownloadModel()
                                 }

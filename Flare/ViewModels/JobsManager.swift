@@ -82,32 +82,40 @@ class JobManager: ObservableObject {
         showStarred: Bool = false,
         showApplied: Bool = false
     ) -> [Job] {
+        print("[JobManager] getFilteredJobs called - titleFilter: '\(titleFilter)', allJobs: \(allJobs.count)")
+
         if filterCache.isValid(titleFilter: titleFilter, locationFilter: locationFilter, sources: sourcesFilter, allJobs: allJobs) {
+            print("[JobManager] Using cached filter results")
             return applyStatusFilters(filterCache.cachedJobs, showStarred: showStarred, showApplied: showApplied)
         }
-        
+
         var filtered = allJobsSorted
+        let beforeDateFilter = filtered.count
         filtered = filtered.filter { job in
             if job.isBumpedRecently {
                 return true
             }
-            
+
             if let postingDate = job.postingDate {
                 return Date().timeIntervalSince(postingDate) <= 172800 // 48 hours
             } else {
                 return Date().timeIntervalSince(job.firstSeenDate) <= 172800
             }
         }
-        
+        print("[JobManager] After 48h filter: \(filtered.count) jobs (was \(beforeDateFilter))")
+
         // Title filter
         if !titleFilter.isEmpty {
             let keywords = titleFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            print("[JobManager] Applying title filter with keywords: \(keywords)")
+            let beforeTitleFilter = filtered.count
             filtered = filtered.filter { job in
                 let jobTitle = job.title.lowercased()
                 return keywords.contains { keyword in
                     jobTitle.contains(keyword)
                 }
             }
+            print("[JobManager] After title filter: \(filtered.count) jobs (was \(beforeTitleFilter))")
         }
         
         // Location filter

@@ -270,7 +270,7 @@ struct AddBoardSection: View {
             
             TextField("Board URL (job listing page)", text: $newBoardURL)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: newBoardURL) { _ in
+                .onChange(of: newBoardURL) { _, _ in
                     detectionResult = nil
                     urlToUse = ""
                 }

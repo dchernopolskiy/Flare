@@ -81,24 +81,30 @@ struct JobListView: View {
             setupFilterDebouncing()
             updateFilteredJobs()
         }
-        .onChange(of: searchText) { _ in filterPublisher.send() }
-        .onChange(of: selectedSources) { _ in filterPublisher.send() }
-        .onChange(of: showOnlyStarred) { _ in filterPublisher.send() }
-        .onChange(of: showOnlyApplied) { _ in filterPublisher.send() }
-        .onChange(of: jobManager.allJobs) { _ in
+        .onChange(of: searchText) { oldValue, newValue in
+            print("[JobListView] searchText changed: '\(oldValue)' -> '\(newValue)'")
+            filterPublisher.send()
+        }
+        .onChange(of: selectedSources) { _, _ in filterPublisher.send() }
+        .onChange(of: showOnlyStarred) { _, _ in filterPublisher.send() }
+        .onChange(of: showOnlyApplied) { _, _ in filterPublisher.send() }
+        .onChange(of: jobManager.allJobs) { _, _ in
             updateFilteredJobs()
         }
     }
     
     private func setupFilterDebouncing() {
+        print("[JobListView] Setting up filter debouncing")
         filterCancellable = filterPublisher
             .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
             .sink { _ in
-                updateFilteredJobs()
+                print("[JobListView] Debounce triggered, calling updateFilteredJobs()")
+                self.updateFilteredJobs()
             }
     }
-    
+
     private func updateFilteredJobs() {
+        print("[JobListView] updateFilteredJobs called with searchText: '\(searchText)'")
         withAnimation(.easeInOut(duration: 0.2)) {
             cachedJobs = jobManager.getFilteredJobs(
                 titleFilter: searchText,
@@ -107,7 +113,7 @@ struct JobListView: View {
                 showStarred: showOnlyStarred,
                 showApplied: showOnlyApplied
             )
-            print("[JobListView] Updated filtered jobs: \(cachedJobs.count) jobs from \(jobManager.allJobs.count) total")
+            print("[JobListView] Updated filtered jobs: \(cachedJobs.count) jobs from \(jobManager.allJobs.count) total (searchText: '\(searchText)')")
         }
     }
 }
