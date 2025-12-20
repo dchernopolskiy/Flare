@@ -142,7 +142,8 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        
+        request.timeoutInterval = 30  // Add timeout to prevent hanging
+
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             print("[Workday] Invalid session response")

@@ -61,6 +61,16 @@ class JobBoardMonitor: ObservableObject {
     }
     
     func removeBoardConfig(at index: Int) {
+        // Get the URL before removing to clear the LLM cache for this domain
+        let config = boardConfigs[index]
+        if let url = URL(string: config.url), let domain = url.host {
+            // Clear any cached LLM failure for this domain so re-adding will retry LLM
+            Task {
+                await APISchemaCache.shared.clearSchema(for: domain)
+                print("[JobBoardMonitor] Cleared LLM cache for \(domain)")
+            }
+        }
+
         boardConfigs.remove(at: index)
         Task {
             await saveConfigs()
