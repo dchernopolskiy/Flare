@@ -203,7 +203,16 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                             "opportunity", "opportunities",
                             "search",
                             "api",
-                            "graphql"
+                            "graphql",
+                            "hiring",
+                            "talent",
+                            "recruit",
+                            "apply",
+                            "listing", "listings",
+                            "role", "roles",
+                            "employment",
+                            "work",
+                            "team"
                         ]
 
                         // Patterns to exclude (likely not job-related)

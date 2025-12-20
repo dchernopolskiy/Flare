@@ -228,7 +228,15 @@ actor LLMParser {
             "\"jobCards\":",
             "\"positions\":",
             "\"postings\":",
-            "\"openings\":"
+            "\"openings\":",
+            "\"listings\":",
+            "\"roles\":",
+            "\"requisitions\":",
+            "\"opportunities\":",
+            "\"hits\":",
+            "\"records\":",
+            "\"content\":",
+            "\"entries\":"
         ]
 
         var bestTruncation = String(json.prefix(maxChars))

@@ -145,10 +145,15 @@ actor SmartJobParser {
             "data-v-"                              // Vue
         ]
         let hasDataDiv = spaPatterns.contains { initialHTML.contains($0) }
-        let isTiny = initialHTML.count < 15000  // Increased threshold for SPAs with inline styles
+        let isTiny = initialHTML.count < 50000  // Generous threshold - many SPAs include inline styles/scripts
 
-        guard hasDataDiv && isTiny else {
-            print("[SmartParser] Not a SPA (hasDataDiv: \(hasDataDiv), size: \(initialHTML.count)), skipping WebKit rendering")
+        // Also check for minimal content - SPAs often have very little actual content in the initial HTML
+        let hasMinimalContent = !initialHTML.contains("<table") &&
+                                 !initialHTML.contains("<ul class=\"jobs") &&
+                                 !initialHTML.contains("job-listing")
+
+        guard hasDataDiv && (isTiny || hasMinimalContent) else {
+            print("[SmartParser] Not a SPA (hasDataDiv: \(hasDataDiv), size: \(initialHTML.count), minimalContent: \(hasMinimalContent)), skipping WebKit rendering")
             return nil
         }
 
@@ -156,8 +161,9 @@ actor SmartJobParser {
         await updateStatus("🔎 Detected SPA, intercepting API calls...", callback: statusCallback)
 
         // Render with WebKit and intercept API calls
+        // Use longer wait time (8s) for first-time discovery to ensure all API calls complete
         let renderer = await WebKitRenderer()
-        let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 5.0)
+        let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 8.0)
 
         print("[SmartParser] WebKit rendered HTML length: \(result.html.count) chars")
         print("[SmartParser] Detected \(result.detectedAPICalls.count) API calls")
