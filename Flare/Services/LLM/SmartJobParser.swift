@@ -7,6 +7,59 @@
 
 import Foundation
 
+// MARK: - Shared Constants for Job Extraction
+
+/// Common field names and patterns used across job extraction methods
+enum JobExtractionPatterns {
+    /// Common field names for job titles
+    static let titleFields = ["title", "text", "name", "position", "jobTitle", "role"]
+
+    /// Common field names for job locations
+    static let locationFields = ["location", "locations", "office", "city", "region", "cityState"]
+
+    /// Common field names for job URLs
+    static let urlFields = ["url", "link", "href", "applyURL", "applyUrl", "jobUrl", "originalURL"]
+
+    /// Common field names for job IDs
+    static let idFields = ["id", "jobId", "requisitionID", "uniqueID", "slug"]
+
+    /// Common keys where job arrays are found in API responses
+    static let jobArrayKeys = ["result", "results", "jobs", "data", "items", "positions", "listings", "openings"]
+
+    /// Analytics and tracking patterns to exclude from API detection
+    static let trackingExcludePatterns = [
+        // Analytics platforms
+        "analytics", "google-analytics", "gtm", "amplitude", "mixpanel", "heap",
+        // Tracking/pixels
+        "pixel", "tracking", "beacon", "collect", "event",
+        // Monitoring
+        "metrics", "telemetry", "log", "stat", "click",
+        // Session replay
+        "fullstory", "logrocket", "hotjar",
+        // Error tracking
+        "sentry", "bugsnag", "newrelic", "datadog", "dynatrace",
+        // Marketing/CRM
+        "facebook", "segment", "intercom", "drift", "hubspot", "marketo", "salesforce",
+        // Other
+        "optimize-pixel"
+    ]
+
+    /// Job-related URL patterns to prioritize
+    static let jobRelatedPatterns = ["job", "career", "position", "opening", "search", "listing"]
+
+    /// Check if a URL is likely tracking/analytics
+    static func isTrackingURL(_ url: String) -> Bool {
+        let lowercased = url.lowercased()
+        return trackingExcludePatterns.contains { lowercased.contains($0) }
+    }
+
+    /// Check if a URL is likely job-related
+    static func isJobRelatedURL(_ url: String) -> Bool {
+        let lowercased = url.lowercased()
+        return jobRelatedPatterns.contains { lowercased.contains($0) }
+    }
+}
+
 /// Cache for detected ATS URLs - maps original URL domain to detected ATS info
 actor DetectedATSCache {
     static let shared = DetectedATSCache()
@@ -397,18 +450,9 @@ actor SmartJobParser {
         // If LLM previously failed, try without schema discovery (simple JSON extraction)
         var foundJobs: [Job]? = nil
 
-        // Filter API calls to prioritize job-related ones
+        // Filter API calls to prioritize job-related ones and exclude tracking
         let jobRelatedAPICalls = result.detectedAPICalls.filter { apiCall in
-            let urlLower = apiCall.url.lowercased()
-            // Prioritize job-related API calls
-            let isJobRelated = urlLower.contains("job") || urlLower.contains("career") ||
-                               urlLower.contains("position") || urlLower.contains("opening") ||
-                               urlLower.contains("search") || urlLower.contains("listing")
-            // Exclude tracking/analytics
-            let isTracking = urlLower.contains("pixel") || urlLower.contains("analytics") ||
-                            urlLower.contains("tracking") || urlLower.contains("collect") ||
-                            urlLower.contains("event") || urlLower.contains("beacon")
-            return isJobRelated && !isTracking
+            JobExtractionPatterns.isJobRelatedURL(apiCall.url) && !JobExtractionPatterns.isTrackingURL(apiCall.url)
         }
 
         // Use job-related calls first, fall back to all calls if none found
@@ -724,9 +768,8 @@ actor SmartJobParser {
             if let array = json as? [[String: Any]] {
                 jobArray = array
             } else if let dict = json as? [String: Any] {
-                // Common keys for job arrays
-                let possibleKeys = ["result", "results", "jobs", "data", "items", "positions", "listings", "openings"]
-                for key in possibleKeys {
+                // Use shared constants for job array keys
+                for key in JobExtractionPatterns.jobArrayKeys {
                     if let array = dict[key] as? [[String: Any]], !array.isEmpty {
                         jobArray = array
                         break
@@ -741,16 +784,13 @@ actor SmartJobParser {
 
             print("[SmartParser] Simple extraction: found \(jobs.count) items in job array")
 
-            // Extract jobs using common field patterns
+            // Extract jobs using shared field patterns
             var extractedJobs: [Job] = []
-            let titleFields = ["title", "text", "name", "position", "jobTitle", "role"]
-            let locationFields = ["location", "locations", "office", "city", "region"]
-            let urlFields = ["url", "link", "href", "id", "slug"]
 
             for jobDict in jobs {
-                // Find title
+                // Find title using shared patterns
                 var title: String?
-                for field in titleFields {
+                for field in JobExtractionPatterns.titleFields {
                     if let t = jobDict[field] as? String, !t.isEmpty {
                         title = t
                         break
@@ -758,15 +798,17 @@ actor SmartJobParser {
                 }
                 guard let jobTitle = title else { continue }
 
-                // Find location
+                // Find location using shared patterns
                 var location = "Not specified"
-                for field in locationFields {
+                for field in JobExtractionPatterns.locationFields {
                     if let loc = jobDict[field] as? String {
                         location = loc
                         break
                     } else if let locs = jobDict[field] as? [[String: Any]], let first = locs.first {
-                        // Handle array of location objects (like Spotify)
-                        if let loc = first["location"] as? String {
+                        // Handle array of location objects (like Spotify, T-Mobile)
+                        if let loc = first["cityState"] as? String {
+                            location = loc
+                        } else if let loc = first["location"] as? String {
                             location = loc
                         } else if let loc = first["name"] as? String {
                             location = loc
@@ -775,9 +817,9 @@ actor SmartJobParser {
                     }
                 }
 
-                // Find URL
+                // Find URL using shared patterns
                 var jobURL = baseURL.absoluteString
-                for field in urlFields {
+                for field in JobExtractionPatterns.urlFields {
                     if let u = jobDict[field] as? String {
                         if u.hasPrefix("http") {
                             jobURL = u
@@ -924,16 +966,7 @@ actor SmartJobParser {
             #"["']?(/graphql[^"'\s]*)["']?"#,
         ]
 
-        // Patterns to exclude (analytics, tracking, etc.)
-        let excludePatterns = [
-            "optimize-pixel", "analytics", "tracking", "metrics", "telemetry",
-            "facebook", "google-analytics", "gtm", "hotjar", "segment",
-            "intercom", "drift", "hubspot", "marketo", "salesforce",
-            "pixel", "beacon", "collect", "event", "log", "stat", "click",
-            "amplitude", "mixpanel", "heap", "fullstory", "logrocket",
-            "sentry", "bugsnag", "newrelic", "datadog", "dynatrace"
-        ]
-
+        // Use shared exclusion patterns
         for pattern in apiPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
                 let matches = regex.matches(in: contentToScan, range: NSRange(contentToScan.startIndex..., in: contentToScan))
@@ -941,11 +974,9 @@ actor SmartJobParser {
                     let captureRange = match.numberOfRanges > 1 ? match.range(at: 1) : match.range
                     if let range = Range(captureRange, in: contentToScan) {
                         let endpoint = String(contentToScan[range])
-                        let lowercaseEndpoint = endpoint.lowercased()
 
-                        // Skip excluded patterns (analytics, tracking, etc.)
-                        let isExcluded = excludePatterns.contains { lowercaseEndpoint.contains($0) }
-                        if isExcluded {
+                        // Skip excluded patterns using shared helper
+                        if JobExtractionPatterns.isTrackingURL(endpoint) {
                             continue
                         }
 
@@ -957,10 +988,11 @@ actor SmartJobParser {
             }
         }
 
-        // Look for embedded JSON with job data (window.__INITIAL_STATE__, etc.)
+        // Look for embedded JSON with job data
+        // Note: __PRELOAD_STATE__ is handled by UniversalJobFetcher's JavaScript execution
+        // which runs first and has access to the browser context
         let jsonPatterns = [
             #"window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});?"#,
-            #"window\.__PRELOAD_STATE__\s*=\s*(\{[\s\S]*?\})[\s;]"#,   // T-Mobile, Radancy-powered sites
             #"window\.__data\s*=\s*(\{[\s\S]*?\});?"#,
             #"window\.pageData\s*=\s*(\{[\s\S]*?\});?"#,
             #""jobs"\s*:\s*(\[[\s\S]*?\])"#,

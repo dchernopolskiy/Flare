@@ -92,21 +92,74 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 let jsCode = """
                 (function() {
                     const jobs = [];
-                    
+
+                    // First, check for embedded JSON data (Radancy/T-Mobile style)
+                    if (window.__PRELOAD_STATE__ && window.__PRELOAD_STATE__.jobSearch) {
+                        const jobData = window.__PRELOAD_STATE__.jobSearch;
+                        const jobList = jobData.jobs || jobData.results || [];
+                        if (jobList.length > 0) {
+                            jobList.forEach(job => {
+                                // Handle location - can be string or array of location objects
+                                let loc = 'Not specified';
+                                if (job.location) {
+                                    loc = job.location;
+                                } else if (job.locations && job.locations.length > 0) {
+                                    const firstLoc = job.locations[0];
+                                    loc = firstLoc.cityState || firstLoc.city || firstLoc.locationText || 'Not specified';
+                                } else if (job.city) {
+                                    loc = job.city;
+                                }
+
+                                // Handle URL - can be full URL or relative path
+                                let jobUrl = job.applyURL || job.applyUrl || job.url || job.jobUrl || job.originalURL || '';
+                                if (jobUrl && !jobUrl.startsWith('http')) {
+                                    jobUrl = window.location.origin + '/job/' + jobUrl;
+                                }
+                                if (!jobUrl) jobUrl = window.location.href;
+
+                                jobs.push({
+                                    title: job.title || job.jobTitle || '',
+                                    location: loc,
+                                    url: jobUrl,
+                                    id: 'preload-' + (job.jobId || job.requisitionID || job.id || Math.random().toString(36).substr(2, 9))
+                                });
+                            });
+                            return JSON.stringify(jobs);
+                        }
+                    }
+
+                    // Also check __INITIAL_STATE__
+                    if (window.__INITIAL_STATE__) {
+                        const state = window.__INITIAL_STATE__;
+                        const jobList = state.jobs || state.positions || state.listings ||
+                                        (state.jobSearch && state.jobSearch.jobs) || [];
+                        if (jobList.length > 0) {
+                            jobList.forEach(job => {
+                                jobs.push({
+                                    title: job.title || job.jobTitle || '',
+                                    location: job.location || job.city || 'Not specified',
+                                    url: job.url || job.applyUrl || window.location.href,
+                                    id: 'initial-' + (job.id || Math.random().toString(36).substr(2, 9))
+                                });
+                            });
+                            return JSON.stringify(jobs);
+                        }
+                    }
+
                     const patterns = [
                         { container: '.job-listing, .job-item, .career-opportunity', title: 'h2, h3, .title', location: '.location' },
                         { container: '[data-job], [data-position]', title: '[data-title], .job-title', location: '[data-location]' },
                         { container: 'article, .card', title: 'h3 a, .card-title', location: '.location, .office' },
                         { container: 'tr', title: 'td:first-child a', location: 'td:nth-child(2)' }
                     ];
-                    
+
                     for (const pattern of patterns) {
                         const containers = document.querySelectorAll(pattern.container);
                         if (containers.length > 0) {
                             containers.forEach(container => {
                                 const titleElem = container.querySelector(pattern.title);
                                 const locationElem = container.querySelector(pattern.location);
-                                
+
                                 if (titleElem && titleElem.textContent.trim()) {
                                     const linkElem = container.querySelector('a[href]');
                                     const job = {
@@ -118,11 +171,11 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                                     jobs.push(job);
                                 }
                             });
-                            
+
                             if (jobs.length > 0) break;
                         }
                     }
-                    
+
                     // If no jobs found with patterns, try finding all job-like links
                     if (jobs.length === 0) {
                         const links = document.querySelectorAll('a[href*="job"], a[href*="career"], a[href*="position"], a[href*="opening"]');
