@@ -106,13 +106,12 @@ actor LLMParser {
         let response = try await llama.start(for: prompt)
         print("[LLM] Schema discovery response: \(response.prefix(200))...")
 
-        guard let jsonStart = response.firstIndex(of: "{"),
-              let jsonEnd = response.lastIndex(of: "}") else {
+        // Try to extract JSON object with improved parsing
+        guard let jsonString = extractJSONObject(from: response) else {
             print("[LLM] No JSON object found in schema response")
             return nil
         }
 
-        let jsonString = String(response[jsonStart...jsonEnd])
         guard let data = jsonString.data(using: .utf8) else {
             return nil
         }
@@ -123,6 +122,7 @@ actor LLMParser {
             return schema
         } catch {
             print("[LLM] Failed to decode schema: \(error)")
+            print("[LLM] Attempted to parse: \(jsonString.prefix(300))...")
             return nil
         }
     }
@@ -195,17 +195,15 @@ actor LLMParser {
         print("[LLM] Pattern detection completed in \(String(format: "%.2f", inferenceTime))s")
         print("[LLM] Pattern detection response: \(response.prefix(300))...")
 
-        // Parse response
-        guard let jsonStart = response.firstIndex(of: "{"),
-              let jsonEnd = response.lastIndex(of: "}") else {
+        // Parse response with improved JSON extraction
+        guard let jsonString = extractJSONObject(from: response) else {
             print("[LLM] No JSON object found in pattern detection response")
             return nil
         }
 
-        let jsonString = String(response[jsonStart...jsonEnd])
         guard let data = jsonString.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            print("[LLM] Failed to parse pattern detection JSON")
+            print("[LLM] Failed to parse pattern detection JSON: \(jsonString.prefix(200))...")
             return nil
         }
 
@@ -319,6 +317,86 @@ actor LLMParser {
         print("[LLM] Unloading model")
         llama = nil
         isLoaded = false
+    }
+
+    // MARK: - JSON Extraction
+
+    /// Extract a valid JSON object from LLM response, handling common issues like
+    /// markdown code blocks, extra text, and incomplete JSON
+    private func extractJSONObject(from response: String) -> String? {
+        var text = response
+
+        // Remove markdown code blocks if present
+        if let codeBlockStart = text.range(of: "```json") {
+            text = String(text[codeBlockStart.upperBound...])
+            if let codeBlockEnd = text.range(of: "```") {
+                text = String(text[..<codeBlockEnd.lowerBound])
+            }
+        } else if let codeBlockStart = text.range(of: "```") {
+            text = String(text[codeBlockStart.upperBound...])
+            if let codeBlockEnd = text.range(of: "```") {
+                text = String(text[..<codeBlockEnd.lowerBound])
+            }
+        }
+
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Find the first { and try to find matching }
+        guard let firstBrace = text.firstIndex(of: "{") else {
+            return nil
+        }
+
+        // Track brace depth to find matching closing brace
+        var depth = 0
+        var inString = false
+        var escapeNext = false
+        var endIndex: String.Index?
+
+        for i in text.indices[firstBrace...] {
+            let char = text[i]
+
+            if escapeNext {
+                escapeNext = false
+                continue
+            }
+
+            if char == "\\" && inString {
+                escapeNext = true
+                continue
+            }
+
+            if char == "\"" {
+                inString = !inString
+                continue
+            }
+
+            if !inString {
+                if char == "{" {
+                    depth += 1
+                } else if char == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        endIndex = text.index(after: i)
+                        break
+                    }
+                }
+            }
+        }
+
+        guard let end = endIndex else {
+            // If we didn't find a matching brace, try the simple approach as fallback
+            if let lastBrace = text.lastIndex(of: "}") {
+                let jsonString = String(text[firstBrace...lastBrace])
+                // Verify it's valid JSON
+                if let data = jsonString.data(using: .utf8),
+                   (try? JSONSerialization.jsonObject(with: data)) != nil {
+                    return jsonString
+                }
+            }
+            return nil
+        }
+
+        return String(text[firstBrace..<end])
     }
 
     // MARK: - Truncation

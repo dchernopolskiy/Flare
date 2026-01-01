@@ -277,42 +277,16 @@ struct AddBoardSection: View {
             
             if let result = detectionResult {
                 DetectionResultView(result: result)
-                
-                if let atsUrl = result.actualATSUrl, atsUrl != newBoardURL {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Detected ATS URL", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(.green)
-                            .fontWeight(.semibold)
-                        
-                        Text(atsUrl)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .background(Color.green.opacity(0.1))
-                            .cornerRadius(4)
-                        
-                        Text("✓ This URL will be used for the job board")
-                            .font(.caption2)
-                            .foregroundColor(.green)
-                            .fontWeight(.semibold)
-                    }
-                    .padding()
-                    .background(Color.green.opacity(0.05))
-                    .cornerRadius(8)
-                }
             }
             
             // Status message for direct ATS links
             if isDirectATSLink, let source = detectedSource {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Direct \(source.rawValue) link detected - ready to add")
+                    Image(systemName: source.icon)
+                        .foregroundColor(source.color)
+                    Text("Direct \(source.rawValue) link - ready to add")
                         .font(.caption)
-                        .foregroundColor(.green)
+                        .foregroundColor(.secondary)
                         .fontWeight(.medium)
                     if !source.isSupported {
                         Text("(Coming soon)")
@@ -322,7 +296,7 @@ struct AddBoardSection: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Color.green.opacity(0.1))
+                .background(Color.secondary.opacity(0.1))
                 .cornerRadius(6)
             }
 

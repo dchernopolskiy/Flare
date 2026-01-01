@@ -338,6 +338,7 @@ actor SmartJobParser {
         var skipLLMAnalysis = false
 
         if let cachedSchema = await schemaCache.getSchema(for: domain) {
+            print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered)")
             if cachedSchema.llmAttempted && !cachedSchema.schemaDiscovered {
                 let daysSinceLastAttempt = Date().timeIntervalSince(cachedSchema.lastAttempt) / (24 * 60 * 60)
 
@@ -361,10 +362,15 @@ actor SmartJobParser {
                 print("[SmartParser] Cached fetch failed, will re-render with WebKit for fresh auth")
                 await updateStatus("🔄 Cached schema failed, re-analyzing...", callback: statusCallback)
             }
+        } else {
+            print("[SmartParser] Cache miss for \(domain) - no cached schema found")
         }
 
         await updateStatus("🌐 Checking site structure...", callback: statusCallback)
         let initialHTML = try await fetchHTML(from: url)
+
+        // Check if we got blocked (empty or very small response likely means WAF/bot protection)
+        let likelyBlocked = initialHTML.count < 1000
 
         let spaPatterns = [
             "id=\"root\"", "id='root'",
@@ -373,7 +379,8 @@ actor SmartJobParser {
             "<app-root", "ng-app", "ng-version",
             "id=\"__nuxt\"", "id='__nuxt'",
             "data-reactroot",
-            "data-v-"
+            "data-v-",
+            "data-turbo"  // Hotwire/Turbo (used by Waymo's Clinch platform)
         ]
         let hasDataDiv = spaPatterns.contains { initialHTML.contains($0) }
         let isTiny = initialHTML.count < 50000
@@ -381,9 +388,17 @@ actor SmartJobParser {
                                  !initialHTML.contains("<ul class=\"jobs") &&
                                  !initialHTML.contains("job-listing")
 
-        guard hasDataDiv && (isTiny || hasMinimalContent) else {
+        // Use WebKit if: SPA detected, OR likely blocked by WAF
+        let shouldUseWebKit = (hasDataDiv && (isTiny || hasMinimalContent)) || likelyBlocked
+
+        guard shouldUseWebKit else {
             print("[SmartParser] Not a SPA (hasDataDiv: \(hasDataDiv), size: \(initialHTML.count), minimalContent: \(hasMinimalContent)), skipping WebKit rendering")
             return nil
+        }
+
+        if likelyBlocked {
+            print("[SmartParser] Likely blocked by WAF (response size: \(initialHTML.count)), trying WebKit...")
+            await updateStatus("🔒 Site appears protected, using browser rendering...", callback: statusCallback)
         }
 
         print("[SmartParser] Detected SPA - using WebKit with API interception...")
@@ -505,6 +520,19 @@ actor SmartJobParser {
             }
         }
 
+        // Final fallback: try to extract jobs directly from WebKit-rendered HTML
+        if result.html.count > 1000 {
+            print("[SmartParser] Trying direct HTML extraction from rendered page...")
+            await updateStatus("📄 Extracting jobs from rendered HTML...", callback: statusCallback)
+
+            if let jobs = extractJobsFromHTML(result.html, baseURL: url, titleFilter: titleFilter, locationFilter: locationFilter), !jobs.isEmpty {
+                print("[SmartParser] Extracted \(jobs.count) jobs from rendered HTML")
+                await updateStatus("✅ Found \(jobs.count) jobs from rendered page", callback: statusCallback)
+                await llmParser.unloadModel()
+                return jobs
+            }
+        }
+
         await llmParser.unloadModel()
 
         if !skipLLMAnalysis {
@@ -512,6 +540,103 @@ actor SmartJobParser {
         }
         await updateStatus("❌ No valid job API found", callback: statusCallback)
         return nil
+    }
+
+    /// Extract jobs directly from HTML using common patterns
+    private func extractJobsFromHTML(_ html: String, baseURL: URL, titleFilter: String, locationFilter: String) -> [Job]? {
+        var jobs: [Job] = []
+
+        // Pattern 1: Links with job title IDs (Clinch/Waymo style)
+        // <a id="link_job_title_..." href="...">Job Title</a>
+        let clinchPattern = #"<a[^>]*id="link_job_title[^"]*"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>"#
+        if let regex = try? NSRegularExpression(pattern: clinchPattern, options: .caseInsensitive) {
+            let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+            for match in matches {
+                if let urlRange = Range(match.range(at: 1), in: html),
+                   let titleRange = Range(match.range(at: 2), in: html) {
+                    let jobUrl = String(html[urlRange])
+                    let title = String(html[titleRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    let fullUrl = jobUrl.hasPrefix("http") ? jobUrl : "https://\(baseURL.host ?? "")\(jobUrl)"
+
+                    let job = Job(
+                        id: "html-\(UUID().uuidString)",
+                        title: title,
+                        location: "See job details",
+                        postingDate: nil,
+                        url: fullUrl,
+                        description: "",
+                        workSiteFlexibility: nil,
+                        source: .unknown,
+                        companyName: baseURL.host?.replacingOccurrences(of: "www.", with: "").replacingOccurrences(of: "careers.", with: "").capitalized,
+                        department: nil,
+                        category: nil,
+                        firstSeenDate: Date(),
+                        originalPostingDate: nil,
+                        wasBumped: false
+                    )
+                    jobs.append(job)
+                }
+            }
+        }
+
+        // Pattern 2: Generic job links with /jobs/ or /careers/ in URL
+        if jobs.isEmpty {
+            let genericPattern = #"<a[^>]*href="([^"]*(?:/jobs/|/careers/|/positions/)[^"]+)"[^>]*>([^<]{5,100})</a>"#
+            if let regex = try? NSRegularExpression(pattern: genericPattern, options: .caseInsensitive) {
+                let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+                var seenUrls = Set<String>()
+                for match in matches {
+                    if let urlRange = Range(match.range(at: 1), in: html),
+                       let titleRange = Range(match.range(at: 2), in: html) {
+                        let jobUrl = String(html[urlRange])
+                        let title = String(html[titleRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                        // Skip navigation links, pagination, etc.
+                        if title.lowercased().contains("next") ||
+                           title.lowercased().contains("prev") ||
+                           title.lowercased().contains("page") ||
+                           title.count < 5 ||
+                           seenUrls.contains(jobUrl) {
+                            continue
+                        }
+
+                        seenUrls.insert(jobUrl)
+                        let fullUrl = jobUrl.hasPrefix("http") ? jobUrl : "https://\(baseURL.host ?? "")\(jobUrl)"
+
+                        let job = Job(
+                            id: "html-\(UUID().uuidString)",
+                            title: title,
+                            location: "See job details",
+                            postingDate: nil,
+                            url: fullUrl,
+                            description: "",
+                            workSiteFlexibility: nil,
+                            source: .unknown,
+                            companyName: baseURL.host?.replacingOccurrences(of: "www.", with: "").replacingOccurrences(of: "careers.", with: "").capitalized,
+                            department: nil,
+                            category: nil,
+                            firstSeenDate: Date(),
+                            originalPostingDate: nil,
+                            wasBumped: false
+                        )
+                        jobs.append(job)
+                    }
+                }
+            }
+        }
+
+        print("[SmartParser] HTML extraction: found \(jobs.count) jobs before filtering")
+        let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
+        print("[SmartParser] HTML extraction: \(filteredJobs.count) jobs after filtering")
+
+        // Return unfiltered if filters removed everything
+        if filteredJobs.isEmpty && !jobs.isEmpty {
+            print("[SmartParser] HTML extraction: filters removed all jobs, returning \(jobs.count) unfiltered")
+            return jobs
+        }
+
+        return filteredJobs.isEmpty ? nil : filteredJobs
     }
 
     private func fetchWithCachedSchema(_ schema: DiscoveredAPISchema, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async -> [Job]? {
@@ -771,6 +896,12 @@ actor SmartJobParser {
             print("[SmartParser] Simple extraction: extracted \(extractedJobs.count) jobs before filtering")
             let filteredJobs = applyFilters(extractedJobs, titleFilter: titleFilter, locationFilter: locationFilter)
             print("[SmartParser] Simple extraction: \(filteredJobs.count) jobs after filtering")
+
+            // If filtering removed all jobs, return unfiltered to avoid losing data
+            if filteredJobs.isEmpty && !extractedJobs.isEmpty {
+                print("[SmartParser] Simple extraction: filters removed all jobs, returning \(extractedJobs.count) unfiltered jobs")
+                return extractedJobs
+            }
             return filteredJobs.isEmpty ? nil : filteredJobs
 
         } catch {

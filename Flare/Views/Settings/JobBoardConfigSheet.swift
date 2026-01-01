@@ -152,10 +152,8 @@ struct BoardConfigRow: View {
                             if testResult == "Testing..." {
                                 ProgressView()
                                     .scaleEffect(0.7)
-                            } else if testResult.hasPrefix("✅") {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                            } else {
+                            } else if !testResult.hasPrefix("✅") {
+                                // Only show icon for failures
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundColor(.red)
                             }
@@ -163,14 +161,14 @@ struct BoardConfigRow: View {
                             Text(testResult.replacingOccurrences(of: "✅ ", with: "").replacingOccurrences(of: "❌ ", with: ""))
                                 .font(.caption)
                                 .fontWeight(.medium)
-                                .foregroundColor(testResult.hasPrefix("✅") ? .green : testResult == "Testing..." ? .blue : .red)
+                                .foregroundColor(testResult.hasPrefix("✅") ? .secondary : testResult == "Testing..." ? .blue : .red)
                                 .lineLimit(1)
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(testResult.hasPrefix("✅") ? Color.green.opacity(0.1) :
+                                .fill(testResult.hasPrefix("✅") ? Color.clear :
                                       testResult == "Testing..." ? Color.blue.opacity(0.1) :
                                       Color.red.opacity(0.1))
                         )
