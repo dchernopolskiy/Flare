@@ -7,60 +7,38 @@
 
 import Foundation
 
-// MARK: - Shared Constants for Job Extraction
+// MARK: - Shared Constants
 
-/// Common field names and patterns used across job extraction methods
 enum JobExtractionPatterns {
-    /// Common field names for job titles
     static let titleFields = ["title", "text", "name", "position", "jobTitle", "role"]
-
-    /// Common field names for job locations
     static let locationFields = ["location", "locations", "office", "city", "region", "cityState"]
-
-    /// Common field names for job URLs
     static let urlFields = ["url", "link", "href", "applyURL", "applyUrl", "jobUrl", "originalURL"]
-
-    /// Common field names for job IDs
     static let idFields = ["id", "jobId", "requisitionID", "uniqueID", "slug"]
-
-    /// Common keys where job arrays are found in API responses
     static let jobArrayKeys = ["result", "results", "jobs", "data", "items", "positions", "listings", "openings"]
 
-    /// Analytics and tracking patterns to exclude from API detection
     static let trackingExcludePatterns = [
-        // Analytics platforms
         "analytics", "google-analytics", "gtm", "amplitude", "mixpanel", "heap",
-        // Tracking/pixels
         "pixel", "tracking", "beacon", "collect", "event",
-        // Monitoring
         "metrics", "telemetry", "log", "stat", "click",
-        // Session replay
         "fullstory", "logrocket", "hotjar",
-        // Error tracking
         "sentry", "bugsnag", "newrelic", "datadog", "dynatrace",
-        // Marketing/CRM
         "facebook", "segment", "intercom", "drift", "hubspot", "marketo", "salesforce",
-        // Other
         "optimize-pixel"
     ]
 
-    /// Job-related URL patterns to prioritize
     static let jobRelatedPatterns = ["job", "career", "position", "opening", "search", "listing"]
 
-    /// Check if a URL is likely tracking/analytics
     static func isTrackingURL(_ url: String) -> Bool {
         let lowercased = url.lowercased()
         return trackingExcludePatterns.contains { lowercased.contains($0) }
     }
 
-    /// Check if a URL is likely job-related
     static func isJobRelatedURL(_ url: String) -> Bool {
         let lowercased = url.lowercased()
         return jobRelatedPatterns.contains { lowercased.contains($0) }
     }
 }
 
-/// Cache for detected ATS URLs - maps original URL domain to detected ATS info
 actor DetectedATSCache {
     static let shared = DetectedATSCache()
 
@@ -151,24 +129,18 @@ actor SmartJobParser {
 
     // MARK: - LLM-Based Parsing
 
-    /// Parse jobs using LLM with WebKit API interception and schema caching
     private func parseWithLLM(url: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async -> [Job] {
         do {
-            // Try WebKit rendering with API detection (for SPAs)
             if let jobs = try await tryWebKitAPIDetection(from: url, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
                 return jobs
             }
 
-            // WebKit approach didn't work - try regex-based script scanning first (fast)
             print("[SmartParser] WebKit approach failed, scanning scripts for patterns...")
             await updateStatus("🔍 Scanning page for job board patterns...", callback: statusCallback)
 
             let html = try await fetchHTML(from: url)
-
-            // Step 1: Fast regex-based scanning of <script> tags (no LLM needed)
             let scanResult = scanScriptsForPatterns(in: html)
 
-            // Check if we found ATS URLs via regex
             if let firstATSURL = scanResult.atsURLs.first,
                let atsType = scanResult.atsType {
                 print("[SmartParser] Regex found ATS: \(atsType) at \(firstATSURL)")
@@ -188,7 +160,6 @@ actor SmartJobParser {
                 }
             }
 
-            // Check if we found API endpoints via regex
             for endpoint in scanResult.apiEndpoints.prefix(3) {
                 print("[SmartParser] Trying regex-detected API: \(endpoint)")
                 if let jobs = await tryDetectedAPIEndpoint(
@@ -203,7 +174,6 @@ actor SmartJobParser {
                 }
             }
 
-            // Check if we found embedded JSON with job data
             for json in scanResult.embeddedJSON {
                 print("[SmartParser] Trying embedded JSON (\(json.count) chars)...")
                 if let schema = try? await llmParser.discoverJSONSchema(from: json) {
@@ -217,12 +187,10 @@ actor SmartJobParser {
                 }
             }
 
-            // Step 2: If regex found nothing, use LLM for pattern detection
             print("[SmartParser] Regex scan found nothing, trying LLM pattern detection...")
             await updateStatus("🤖 AI analyzing page for hidden patterns...", callback: statusCallback)
 
             if let patternResult = try await llmParser.detectPatternsInContent(html, sourceURL: url) {
-                // Found an ATS URL - return it for the caller to use dedicated fetcher
                 if let atsURL = patternResult.atsURL,
                    let atsType = patternResult.atsType,
                    atsType != "null",
@@ -230,7 +198,6 @@ actor SmartJobParser {
                     print("[SmartParser] LLM detected ATS: \(atsType) at \(atsURL)")
                     await updateStatus("🎯 AI found \(atsType.capitalized) ATS: \(atsURL)", callback: statusCallback)
 
-                    // Try to fetch from the detected ATS URL
                     if let detectedURL = URL(string: atsURL) {
                         let jobs = try await fetchFromDetectedATS(
                             url: detectedURL,
@@ -245,7 +212,6 @@ actor SmartJobParser {
                     }
                 }
 
-                // Found an API endpoint - try to fetch and parse it
                 if let apiEndpoint = patternResult.apiEndpoint,
                    let apiType = patternResult.apiType,
                    apiType != "null",
@@ -266,7 +232,6 @@ actor SmartJobParser {
                 }
             }
 
-            // Step 2: Fall back to direct HTML extraction with LLM
             print("[SmartParser] No patterns found, attempting direct HTML parsing...")
             await updateStatus("📄 Analyzing HTML content with AI...", callback: statusCallback)
             let parsedJobs = try await llmParser.extractJobs(from: html, url: url)
@@ -288,7 +253,6 @@ actor SmartJobParser {
         }
     }
 
-    /// Fetch jobs from a detected ATS URL using the appropriate dedicated fetcher
     private func fetchFromDetectedATS(url: URL, atsType: String, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async throws -> [Job] {
         await updateStatus("⚡ Fetching from \(atsType.capitalized)...", callback: statusCallback)
 
@@ -312,7 +276,6 @@ actor SmartJobParser {
             return []
         }
 
-        // Update status after successful fetch
         if jobs.isEmpty {
             await updateStatus("❌ No jobs found from \(atsType.capitalized)", callback: statusCallback)
         } else {
@@ -321,7 +284,6 @@ actor SmartJobParser {
         return jobs
     }
 
-    /// Try to fetch jobs from a detected API endpoint
     private func tryDetectedAPIEndpoint(endpoint: String, apiType: String, baseURL: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async -> [Job]? {
         guard let apiURL = URL(string: endpoint, relativeTo: baseURL)?.absoluteURL else {
             print("[SmartParser] Invalid API endpoint URL: \(endpoint)")
@@ -349,7 +311,6 @@ actor SmartJobParser {
 
             print("[SmartParser] API response: \(jsonString.prefix(500))...")
 
-            // Use LLM to discover schema and parse
             guard let schema = try await llmParser.discoverJSONSchema(from: jsonString) else {
                 print("[SmartParser] Failed to discover schema for API response")
                 return nil
@@ -371,23 +332,19 @@ actor SmartJobParser {
         return nil
     }
 
-    /// Try WebKit rendering with API interception (primary LLM approach for SPAs)
     private func tryWebKitAPIDetection(from url: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async throws -> [Job]? {
         guard let domain = url.host else { return nil }
 
-        // Track whether LLM previously failed (we'll still do WebKit + regex, just skip LLM)
         var skipLLMAnalysis = false
 
-        // Check cache first
         if let cachedSchema = await schemaCache.getSchema(for: domain) {
-            // Check if LLM previously failed - retry after 7 days
             if cachedSchema.llmAttempted && !cachedSchema.schemaDiscovered {
                 let daysSinceLastAttempt = Date().timeIntervalSince(cachedSchema.lastAttempt) / (24 * 60 * 60)
 
                 if daysSinceLastAttempt < 7 {
                     print("[SmartParser] LLM previously failed for \(domain) (\(Int(daysSinceLastAttempt)) days ago) - will still try WebKit + regex scan")
                     await updateStatus("🔍 Scanning for job board patterns...", callback: statusCallback)
-                    skipLLMAnalysis = true  // Skip LLM but still do WebKit rendering
+                    skipLLMAnalysis = true
                 } else {
                     print("[SmartParser] LLM failed \(Int(daysSinceLastAttempt)) days ago for \(domain) - retrying now")
                     await updateStatus("🔄 Retrying AI analysis (previous attempt was \(Int(daysSinceLastAttempt)) days ago)", callback: statusCallback)
@@ -395,7 +352,6 @@ actor SmartJobParser {
                 }
             }
 
-            // Use cached schema if available
             if cachedSchema.schemaDiscovered {
                 print("[SmartParser] Using cached schema for \(domain)")
                 await updateStatus("⚡ Using cached schema for \(domain)", callback: statusCallback)
@@ -407,24 +363,20 @@ actor SmartJobParser {
             }
         }
 
-        // Check if it's a SPA before rendering
         await updateStatus("🌐 Checking site structure...", callback: statusCallback)
         let initialHTML = try await fetchHTML(from: url)
 
-        // Check for common SPA framework root elements
         let spaPatterns = [
-            "id=\"root\"", "id='root'",           // React
-            "id=\"app\"", "id='app'",             // Vue, generic
-            "id=\"__next\"", "id='__next'",       // Next.js
-            "<app-root", "ng-app", "ng-version",  // Angular
-            "id=\"__nuxt\"", "id='__nuxt'",       // Nuxt.js
-            "data-reactroot",                      // React
-            "data-v-"                              // Vue
+            "id=\"root\"", "id='root'",
+            "id=\"app\"", "id='app'",
+            "id=\"__next\"", "id='__next'",
+            "<app-root", "ng-app", "ng-version",
+            "id=\"__nuxt\"", "id='__nuxt'",
+            "data-reactroot",
+            "data-v-"
         ]
         let hasDataDiv = spaPatterns.contains { initialHTML.contains($0) }
-        let isTiny = initialHTML.count < 50000  // Generous threshold - many SPAs include inline styles/scripts
-
-        // Also check for minimal content - SPAs often have very little actual content in the initial HTML
+        let isTiny = initialHTML.count < 50000
         let hasMinimalContent = !initialHTML.contains("<table") &&
                                  !initialHTML.contains("<ul class=\"jobs") &&
                                  !initialHTML.contains("job-listing")
@@ -437,8 +389,6 @@ actor SmartJobParser {
         print("[SmartParser] Detected SPA - using WebKit with API interception...")
         await updateStatus("🔎 Detected SPA, intercepting API calls...", callback: statusCallback)
 
-        // Render with WebKit and intercept API calls
-        // Use longer wait time (8s) for first-time discovery to ensure all API calls complete
         let renderer = await WebKitRenderer()
         let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 8.0)
 
@@ -446,16 +396,11 @@ actor SmartJobParser {
         print("[SmartParser] Detected \(result.detectedAPICalls.count) API calls")
         await updateStatus("📡 Found \(result.detectedAPICalls.count) API calls", callback: statusCallback)
 
-        // Try each detected API call
-        // If LLM previously failed, try without schema discovery (simple JSON extraction)
         var foundJobs: [Job]? = nil
 
-        // Filter API calls to prioritize job-related ones and exclude tracking
         let jobRelatedAPICalls = result.detectedAPICalls.filter { apiCall in
             JobExtractionPatterns.isJobRelatedURL(apiCall.url) && !JobExtractionPatterns.isTrackingURL(apiCall.url)
         }
-
-        // Use job-related calls first, fall back to all calls if none found
         let apiCallsToTry = jobRelatedAPICalls.isEmpty ? result.detectedAPICalls : jobRelatedAPICalls
 
         for (index, apiCall) in apiCallsToTry.enumerated() {
@@ -463,7 +408,6 @@ actor SmartJobParser {
             await updateStatus("🔍 Analyzing API \(index + 1)/\(apiCallsToTry.count): \(URL(string: apiCall.url)?.host ?? "unknown")", callback: statusCallback)
 
             if skipLLMAnalysis {
-                // Try simple JSON extraction without LLM schema discovery
                 if let jobs = await trySimpleAPIExtraction(
                     apiCall: apiCall,
                     baseURL: url,
@@ -477,7 +421,6 @@ actor SmartJobParser {
                     break
                 }
             } else {
-                // Try LLM schema discovery first
                 if let jobs = await discoverAndCacheSchema(
                     apiCall: apiCall,
                     domain: domain,
@@ -491,7 +434,6 @@ actor SmartJobParser {
                     break
                 }
 
-                // LLM failed - try simple extraction as fallback
                 print("[SmartParser] LLM schema discovery failed, trying simple extraction...")
                 await updateStatus("🔄 Trying simpler extraction method...", callback: statusCallback)
                 if let jobs = await trySimpleAPIExtraction(
@@ -510,33 +452,24 @@ actor SmartJobParser {
         }
 
         if let jobs = foundJobs {
-            // Unload model on success
             await llmParser.unloadModel()
             return jobs
         }
 
-        // Scan the RENDERED HTML for ATS patterns
-        // This catches URLs injected by GTM/JS that weren't in the initial HTML
-        // We do this when: no API calls found, or API calls didn't return jobs
         print("[SmartParser] Scanning WebKit-rendered HTML for ATS patterns...")
         await updateStatus("🔍 Scanning rendered page for job board patterns...", callback: statusCallback)
 
         let renderedScanResult = scanScriptsForPatterns(in: result.html)
 
-        // Check if we found ATS URLs in the rendered content
         if let firstATSURL = renderedScanResult.atsURLs.first,
            let atsType = renderedScanResult.atsType {
-            // Extract base ATS URL (remove job detail path, trailing backslash)
             let baseATSURL = extractBaseATSURL(from: firstATSURL, atsType: atsType)
             print("[SmartParser] Found ATS in rendered HTML: \(atsType)")
             print("[SmartParser] Original URL: \(firstATSURL)")
             print("[SmartParser] Base URL: \(baseATSURL)")
             await updateStatus("🎯 Found \(atsType.capitalized) in rendered page!", callback: statusCallback)
 
-            // Store in cache for future refreshes
             await detectedATSCache.store(for: domain, atsURL: baseATSURL, atsType: atsType)
-
-            // Unload model before using dedicated fetcher
             await llmParser.unloadModel()
 
             if let detectedURL = URL(string: baseATSURL) {
@@ -557,7 +490,6 @@ actor SmartJobParser {
             }
         }
 
-        // Check for API endpoints in rendered HTML
         for endpoint in renderedScanResult.apiEndpoints.prefix(3) {
             print("[SmartParser] Trying rendered HTML API: \(endpoint)")
             if let jobs = await tryDetectedAPIEndpoint(
@@ -573,10 +505,8 @@ actor SmartJobParser {
             }
         }
 
-        // Always unload model to free ~2GB memory
         await llmParser.unloadModel()
 
-        // No jobs found - mark as failed (only if we haven't already cached a failure)
         if !skipLLMAnalysis {
             await schemaCache.markLLMAttemptFailed(for: domain)
         }
@@ -584,7 +514,6 @@ actor SmartJobParser {
         return nil
     }
 
-    /// Fetch jobs using a cached schema (fast path - no LLM needed)
     private func fetchWithCachedSchema(_ schema: DiscoveredAPISchema, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async -> [Job]? {
         print("[SmartParser] Fetching from cached endpoint: \(schema.endpoint)")
 
@@ -603,7 +532,6 @@ actor SmartJobParser {
         return jobs.isEmpty ? nil : jobs
     }
 
-    /// Discover schema using LLM and cache it for future use (one-time operation)
     private func discoverAndCacheSchema(
         apiCall: DetectedAPICall,
         domain: String,
@@ -614,7 +542,6 @@ actor SmartJobParser {
         guard let apiURL = URL(string: apiCall.url) else { return nil }
 
         do {
-            // Build request with intercepted headers/body
             var request = URLRequest(url: apiURL)
             request.httpMethod = apiCall.method
 
@@ -628,7 +555,6 @@ actor SmartJobParser {
                 }
             }
 
-            // Fetch API response
             await updateStatus("📥 Fetching API response...", callback: statusCallback)
             let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -762,13 +688,11 @@ actor SmartJobParser {
                 return nil
             }
 
-            // Try to find job array in common locations
             var jobArray: [[String: Any]]?
 
             if let array = json as? [[String: Any]] {
                 jobArray = array
             } else if let dict = json as? [String: Any] {
-                // Use shared constants for job array keys
                 for key in JobExtractionPatterns.jobArrayKeys {
                     if let array = dict[key] as? [[String: Any]], !array.isEmpty {
                         jobArray = array
@@ -784,11 +708,9 @@ actor SmartJobParser {
 
             print("[SmartParser] Simple extraction: found \(jobs.count) items in job array")
 
-            // Extract jobs using shared field patterns
             var extractedJobs: [Job] = []
 
             for jobDict in jobs {
-                // Find title using shared patterns
                 var title: String?
                 for field in JobExtractionPatterns.titleFields {
                     if let t = jobDict[field] as? String, !t.isEmpty {
@@ -798,14 +720,12 @@ actor SmartJobParser {
                 }
                 guard let jobTitle = title else { continue }
 
-                // Find location using shared patterns
                 var location = "Not specified"
                 for field in JobExtractionPatterns.locationFields {
                     if let loc = jobDict[field] as? String {
                         location = loc
                         break
                     } else if let locs = jobDict[field] as? [[String: Any]], let first = locs.first {
-                        // Handle array of location objects (like Spotify, T-Mobile)
                         if let loc = first["cityState"] as? String {
                             location = loc
                         } else if let loc = first["location"] as? String {
@@ -817,14 +737,12 @@ actor SmartJobParser {
                     }
                 }
 
-                // Find URL using shared patterns
                 var jobURL = baseURL.absoluteString
                 for field in JobExtractionPatterns.urlFields {
                     if let u = jobDict[field] as? String {
                         if u.hasPrefix("http") {
                             jobURL = u
                         } else {
-                            // Build URL from ID/slug
                             jobURL = "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "")/jobs/\(u)"
                         }
                         break
@@ -863,7 +781,6 @@ actor SmartJobParser {
 
     // MARK: - Helper Methods
 
-    /// Fetch HTML from URL (basic fetch without rendering)
     private func fetchHTML(from url: URL) async throws -> String {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
@@ -882,25 +799,21 @@ actor SmartJobParser {
         return html
     }
 
-    // MARK: - Pre-LLM Script Scanning (Fast Regex-based Detection)
+    // MARK: - Script Scanning
 
-    /// Result of scanning HTML for ATS/API patterns
     struct ScriptScanResult {
-        let atsURLs: [String]           // Detected ATS URLs
-        let atsType: String?            // Primary ATS type detected
-        let apiEndpoints: [String]      // Detected API endpoints
-        let embeddedJSON: [String]      // JSON blobs found in scripts
+        let atsURLs: [String]
+        let atsType: String?
+        let apiEndpoints: [String]
+        let embeddedJSON: [String]
     }
 
-    /// Scan HTML <script> tags for ATS URLs, API endpoints, and embedded JSON
-    /// This is faster than LLM and catches patterns before we need AI
     private func scanScriptsForPatterns(in html: String) -> ScriptScanResult {
         var atsURLs: [String] = []
         var apiEndpoints: [String] = []
         var embeddedJSON: [String] = []
         var detectedATSType: String?
 
-        // Extract all script tag contents
         let scriptPattern = #"<script[^>]*>([\s\S]*?)</script>"#
         let scriptRegex = try? NSRegularExpression(pattern: scriptPattern, options: .caseInsensitive)
         let range = NSRange(html.startIndex..., in: html)
@@ -912,10 +825,8 @@ actor SmartJobParser {
             }
         }
 
-        // Also scan the full HTML for inline patterns
         let contentToScan = allScriptContent + html
 
-        // ATS URL patterns (both normal and escaped formats)
         let atsPatterns: [(pattern: String, type: String)] = [
             (#"https?:(?:\\/\\/|//)[\w.-]*\.myworkdayjobs\.com[^\s"'<>]*"#, "workday"),
             (#"https?:(?:\\/\\/|//)[^"'\s]*greenhouse\.io[^\s"'<>]*"#, "greenhouse"),
@@ -929,14 +840,11 @@ actor SmartJobParser {
                 for match in matches {
                     if let range = Range(match.range, in: contentToScan) {
                         var url = String(contentToScan[range])
-                        // Unescape escaped URLs
                         url = url.replacingOccurrences(of: "\\/", with: "/")
-                        // Clean up trailing punctuation and HTML entities
                         url = url.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`,;"))
                             .replacingOccurrences(of: "&#34", with: "")
                             .replacingOccurrences(of: "&quot;", with: "")
 
-                        // Extract base URL (handles /apply, /login, /job/... paths)
                         let baseURL = extractBaseATSURL(from: url, atsType: atsType)
 
                         if !atsURLs.contains(baseURL) && baseURL.contains(".") {
@@ -975,7 +883,6 @@ actor SmartJobParser {
                     if let range = Range(captureRange, in: contentToScan) {
                         let endpoint = String(contentToScan[range])
 
-                        // Skip excluded patterns using shared helper
                         if JobExtractionPatterns.isTrackingURL(endpoint) {
                             continue
                         }
@@ -988,9 +895,6 @@ actor SmartJobParser {
             }
         }
 
-        // Look for embedded JSON with job data
-        // Note: __PRELOAD_STATE__ is handled by UniversalJobFetcher's JavaScript execution
-        // which runs first and has access to the browser context
         let jsonPatterns = [
             #"window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});?"#,
             #"window\.__data\s*=\s*(\{[\s\S]*?\});?"#,
@@ -1003,10 +907,10 @@ actor SmartJobParser {
         for pattern in jsonPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
                 let matches = regex.matches(in: allScriptContent, range: NSRange(allScriptContent.startIndex..., in: allScriptContent))
-                for match in matches.prefix(3) { // Limit to first 3 matches
+                for match in matches.prefix(3) {
                     if match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: allScriptContent) {
                         let json = String(allScriptContent[range])
-                        if json.count > 100 && json.count < 500000 { // Reasonable size
+                        if json.count > 100 && json.count < 500000 {
                             embeddedJSON.append(json)
                         }
                     }
@@ -1030,7 +934,6 @@ actor SmartJobParser {
         )
     }
 
-    /// Convert ParsedJob to Job model
     private func convertToJob(_ parsed: ParsedJob, url: URL) -> Job? {
         guard !parsed.title.isEmpty else { return nil }
 
@@ -1052,11 +955,7 @@ actor SmartJobParser {
         )
     }
 
-    /// Extract base ATS URL from a job detail URL
-    /// Converts: https://company.wd5.myworkdayjobs.com/SiteName/job/Location/Title_ID\
-    /// To: https://company.wd5.myworkdayjobs.com/SiteName/
     private func extractBaseATSURL(from url: String, atsType: String) -> String {
-        // Remove trailing backslash, quotes, and HTML entities
         var cleanURL = url
             .trimmingCharacters(in: CharacterSet(charactersIn: "\\\"'"))
             .replacingOccurrences(of: "&#34", with: "")
@@ -1065,13 +964,6 @@ actor SmartJobParser {
 
         switch atsType.lowercased() {
         case "workday":
-            // Workday formats we might encounter:
-            // - https://company.wd5.myworkdayjobs.com/SiteName/job/Location/Title_ID
-            // - https://company.wd5.myworkdayjobs.com/SiteName/job/Location/Title_ID/apply
-            // - https://company.wd5.myworkdayjobs.com/SiteName/login
-            // We want: https://company.wd5.myworkdayjobs.com/SiteName/
-
-            // First, remove /apply suffix if present
             if cleanURL.hasSuffix("/apply") {
                 cleanURL = String(cleanURL.dropLast(6))
             }

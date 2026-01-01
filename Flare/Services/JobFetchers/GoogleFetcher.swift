@@ -104,7 +104,6 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         }
 
         var location: String?
-        // Capture ALL locations - primary (r0wTof) and secondary (r0wTof p3oCrc)
         let locationPattern = #"<span class="r0wTof[^"]*">([^<]+)</span>"#
         if let locationRegex = try? NSRegularExpression(pattern: locationPattern, options: []) {
             let matches = locationRegex.matches(in: html, range: NSRange(html.startIndex..., in: html))
@@ -112,7 +111,6 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             for match in matches {
                 if let range = Range(match.range, in: html),
                    let text = extractText(from: String(html[range]), pattern: #">([^<]+)<"#) {
-                    // Remove leading semicolon and trim (secondary locations have "; City, State")
                     let cleaned = text.trimmingCharacters(in: .whitespaces)
                         .replacingOccurrences(of: "^;\\s*", with: "", options: .regularExpression)
                     if !cleaned.isEmpty && !locations.contains(cleaned) {

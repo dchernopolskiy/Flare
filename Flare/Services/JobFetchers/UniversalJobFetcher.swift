@@ -93,13 +93,11 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 (function() {
                     const jobs = [];
 
-                    // First, check for embedded JSON data (Radancy/T-Mobile style)
                     if (window.__PRELOAD_STATE__ && window.__PRELOAD_STATE__.jobSearch) {
                         const jobData = window.__PRELOAD_STATE__.jobSearch;
                         const jobList = jobData.jobs || jobData.results || [];
                         if (jobList.length > 0) {
                             jobList.forEach(job => {
-                                // Handle location - can be string or array of location objects
                                 let loc = 'Not specified';
                                 if (job.location) {
                                     loc = job.location;
@@ -110,7 +108,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                                     loc = job.city;
                                 }
 
-                                // Handle URL - can be full URL or relative path
                                 let jobUrl = job.applyURL || job.applyUrl || job.url || job.jobUrl || job.originalURL || '';
                                 if (jobUrl && !jobUrl.startsWith('http')) {
                                     jobUrl = window.location.origin + '/job/' + jobUrl;
@@ -128,7 +125,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                         }
                     }
 
-                    // Also check __INITIAL_STATE__
                     if (window.__INITIAL_STATE__) {
                         const state = window.__INITIAL_STATE__;
                         const jobList = state.jobs || state.positions || state.listings ||
