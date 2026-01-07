@@ -39,7 +39,9 @@ actor GreenhouseFetcher: JobFetcherProtocol {
     
     func fetchGreenhouseJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let boardSlug = extractGreenhouseBoardSlug(from: url)
-        
+        print("[Greenhouse] Fetching jobs for board: \(boardSlug)")
+        print("[Greenhouse] Title filter: '\(titleFilter)', Location filter: '\(locationFilter)'")
+
         let apiURL = URL(string: "https://boards-api.greenhouse.io/v1/boards/\(boardSlug)/jobs?content=true")!
         
         var request = URLRequest(url: apiURL)
@@ -61,16 +63,17 @@ actor GreenhouseFetcher: JobFetcherProtocol {
         
         do {
             let decoded = try JSONDecoder().decode(GreenhouseResponse.self, from: data)
-            
+            print("[Greenhouse] API returned \(decoded.jobs.count) total jobs")
+
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            
+
             let fallbackFormatter = ISO8601DateFormatter()
             fallbackFormatter.formatOptions = [.withInternetDateTime]
-            
-            let titleKeywords = parseFilterString(titleFilter)
+
+            let titleKeywords = parseFilterString(titleFilter, includeRemote: false)
             let locationKeywords = parseFilterString(locationFilter)
-            
+
             print("[Greenhouse] Applying filters - Title keywords: \(titleKeywords), Location keywords: \(locationKeywords)")
 
             let jobs = decoded.jobs.enumerated().compactMap { (index, ghJob) -> Job? in
@@ -78,51 +81,47 @@ actor GreenhouseFetcher: JobFetcherProtocol {
                     print("[Greenhouse] Skipping job at index \(index): empty title")
                     return nil
                 }
-                
+
                 guard !ghJob.absolute_url.isEmpty else {
                     print("[Greenhouse] Skipping job '\(ghJob.title)' at index \(index): empty URL")
                     return nil
                 }
-                
+
                 var postingDate = Date()
                 if let dateString = ghJob.updated_at {
                     postingDate = formatter.date(from: dateString)
                                ?? fallbackFormatter.date(from: dateString)
                                ?? Date()
                 }
-                
-                let parsed = ParsedLocation(from: ghJob.location?.name ?? "")
-                let targetCountries = LocationService.extractTargetCountries(from: locationFilter)
 
-                if !locationFilter.isEmpty && !targetCountries.contains(parsed.country) {
-                    return nil
-                }
-
-                let location = parsed.displayString + (parsed.isRemote ? " (Remote)" : "")
+                let rawLocation = ghJob.location?.name ?? ""
                 let title = ghJob.title
-                
+
+                // Title filter
                 if !titleKeywords.isEmpty {
                     let titleMatches = titleKeywords.contains { keyword in
                         title.localizedCaseInsensitiveContains(keyword)
                     }
                     if !titleMatches {
-                        print("[Greenhouse] Filtered out by title: '\(title)' doesn't match any of \(titleKeywords)")
                         return nil
                     }
                 }
-                
+
+                // Location filter - simple keyword matching (includes "remote" automatically)
                 if !locationKeywords.isEmpty {
                     let locationMatches = locationKeywords.contains { keyword in
-                        location.localizedCaseInsensitiveContains(keyword)
+                        rawLocation.localizedCaseInsensitiveContains(keyword)
                     }
                     if !locationMatches {
-                        print("[Greenhouse] Filtered out by location: '\(location)' doesn't match any of \(locationKeywords)")
                         return nil
                     }
                 }
                 
                 let cleanDescription = HTMLCleaner.cleanHTML(ghJob.content ?? "")
-                
+
+                // Use raw location, it's more accurate than trying to parse
+                let location = rawLocation.isEmpty ? "Not specified" : rawLocation
+
                 return Job(
                     id: "gh-\(ghJob.id)",
                     title: title,

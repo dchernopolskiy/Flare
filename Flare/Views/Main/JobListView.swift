@@ -15,7 +15,7 @@ struct JobListView: View {
     let isWindowMinimized: Bool
     
     @State private var searchText = ""
-    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday].filter { $0.isSupported })
+    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday, .unknown].filter { $0.isSupported })
     @State private var showOnlyStarred = false
     @State private var showOnlyApplied = false
     @State private var cachedJobs: [Job] = []

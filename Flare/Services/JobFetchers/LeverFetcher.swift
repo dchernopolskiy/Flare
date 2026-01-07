@@ -10,10 +10,13 @@ import Foundation
 actor LeverFetcher: URLBasedJobFetcherProtocol {
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let slug = extractLeverSlug(from: url)
+        print("[Lever] Fetching jobs for: \(slug)")
+        print("[Lever] Title filter: '\(titleFilter)', Location filter: '\(locationFilter)'")
+
         guard let apiURL = URL(string: "https://api.lever.co/v0/postings/\(slug)?mode=json") else {
             throw FetchError.invalidURL
         }
-        
+
         let (data, response) = try await URLSession.shared.data(from: apiURL)
         
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -49,8 +52,10 @@ actor LeverFetcher: URLBasedJobFetcherProtocol {
         guard !decoded.isEmpty else {
             throw FetchError.noJobs
         }
-        
-        let titleKeywords = parseFilterString(titleFilter)
+
+        print("[Lever] API returned \(decoded.count) total jobs")
+
+        let titleKeywords = parseFilterString(titleFilter, includeRemote: false)
         let locationKeywords = parseFilterString(locationFilter)
         
         return decoded.enumerated().compactMap { (index, job) -> Job? in
