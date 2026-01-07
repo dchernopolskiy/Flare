@@ -287,14 +287,18 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         }
 
         let bulletFields = workdayJob.bulletFields ?? []
-        let jobId = bulletFields.first ?? UUID().uuidString
 
+        // Extract the job slug from externalPath (last path component)
+        // e.g., "/job/USA---Seattle-WA/Senior-Salesforce-System-Administrator_JR2025476878-1"
+        // -> "Senior-Salesforce-System-Administrator_JR2025476878-1"
         let pathComponents = externalPath.components(separatedBy: "/")
-        let titleSlug = pathComponents.last?.components(separatedBy: "_").first ?? title
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: ",", with: "")
+        let jobSlug = pathComponents.last ?? ""
 
-        let jobURL = "https://\(config.company).\(config.instance).myworkdayjobs.com/en-US/\(config.siteName)/details/\(titleSlug)_\(jobId)"
+        // Extract the job ID for internal tracking (the part after the last underscore)
+        // e.g., "Senior-Salesforce-System-Administrator_JR2025476878-1" -> "JR2025476878-1"
+        let jobId = jobSlug.components(separatedBy: "_").last ?? bulletFields.first ?? UUID().uuidString
+
+        let jobURL = "https://\(config.company).\(config.instance).myworkdayjobs.com/en-US/\(config.siteName)/details/\(jobSlug)"
 
         let postingDate = parsePostedDate(workdayJob.postedOn ?? "")
 
