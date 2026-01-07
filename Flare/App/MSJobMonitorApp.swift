@@ -16,9 +16,9 @@ struct MSJobMonitorApp: App {
     @StateObject private var jobManager = JobManager.shared
     @StateObject private var boardMonitor = JobBoardMonitor.shared
     @AppStorage("isFirstLaunch") private var isFirstLaunch = true
-    
+
     var body: some Scene {
-        WindowGroup {
+        Window("Flare", id: "main") {
             ContentView()
                 .environmentObject(jobManager)
                 .environmentObject(boardMonitor)
@@ -39,10 +39,10 @@ struct MSJobMonitorApp: App {
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About Microsoft Job Monitor") {
+                Button("About Flare") {
                     NSApplication.shared.orderFrontStandardAboutPanel(
                         options: [
-                            .applicationName: "Microsoft Job Monitor",
+                            .applicationName: "Flare",
                             .applicationVersion: "1.0.0"
                         ]
                     )

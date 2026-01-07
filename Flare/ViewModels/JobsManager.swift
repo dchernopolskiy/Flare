@@ -619,33 +619,38 @@ class JobManager: ObservableObject {
         // Custom Boards
         if enableCustomBoards {
             tracker.startFetch(source: "Custom Boards")
-            do {
-                let customJobs = await JobBoardMonitor.shared.fetchAllBoardJobs(
-                    titleFilter: jobTitleFilter,
-                    locationFilter: locationFilter
-                )
-                let newJobs = filterNewJobs(customJobs)
-                allNewJobs.append(contentsOf: newJobs)
-                fetchStatistics.customBoardJobs = customJobs.count
-                tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
+            let customJobs = await JobBoardMonitor.shared.fetchAllBoardJobs(
+                titleFilter: jobTitleFilter,
+                locationFilter: locationFilter
+            )
 
-                // Propagate job board errors to main error display (including nil to clear)
-                let boardError = await JobBoardMonitor.shared.lastError
-                if let boardError = boardError {
-                    lastError = boardError
-                } else if lastError?.contains("Custom Boards") == true || lastError?.contains(":") == true {
-                    // Clear error if it was from a job board and boards are now successful
-                    lastError = nil
+            // Group custom jobs by their source and add to sourceJobsMap
+            let customJobsBySource = Dictionary(grouping: customJobs) { $0.source }
+            for (source, jobs) in customJobsBySource {
+                if sourceJobsMap[source] != nil {
+                    sourceJobsMap[source]?.append(contentsOf: jobs)
+                } else {
+                    sourceJobsMap[source] = jobs
                 }
+            }
 
-                Task {
-                    try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
-                    tracker.clearStatus(source: "Custom Boards")
-                }
-            } catch {
-                print("[Custom Boards] Error: \(error)")
-                lastError = "Custom Boards: \(error.localizedDescription)"
-                tracker.failedFetch(source: "Custom Boards", error: error)
+            let newJobs = filterNewJobs(customJobs)
+            allNewJobs.append(contentsOf: newJobs)
+            fetchStatistics.customBoardJobs = customJobs.count
+            tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
+
+            // Propagate job board errors to main error display (including nil to clear)
+            let boardError = await JobBoardMonitor.shared.lastError
+            if let boardError = boardError {
+                lastError = boardError
+            } else if lastError?.contains("Custom Boards") == true || lastError?.contains(":") == true {
+                // Clear error if it was from a job board and boards are now successful
+                lastError = nil
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: FetchDelayConfig.statusClearDelay)
+                tracker.clearStatus(source: "Custom Boards")
             }
         }
         
