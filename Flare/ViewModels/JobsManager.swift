@@ -31,6 +31,9 @@ class JobManager: ObservableObject {
                 let date2 = job2.postingDate ?? job2.firstSeenDate
                 return date1 > date2
             }
+            // Invalidate filter cache synchronously to ensure fresh results on next query
+            filterCache.invalidate()
+            print("[JobManager] allJobs didSet: \(allJobs.count) jobs, cache invalidated")
         }
     }
     private var allJobsSorted: [Job] = []
@@ -47,7 +50,6 @@ class JobManager: ObservableObject {
     @Published private var cachedFilteredJobs: [Job] = []
     @Published private var filterCache = FilterCache()
     private var filterCancellable: AnyCancellable?
-    private var allJobsCancellable: AnyCancellable?
     
     
     struct FilterCache {
@@ -97,9 +99,11 @@ class JobManager: ObservableObject {
             }
 
             if let postingDate = job.postingDate {
-                return Date().timeIntervalSince(postingDate) <= 172800 // 48 hours
+                let diff = Date().timeIntervalSince(postingDate)
+                return diff <= 172800 && diff >= 0 // Within 48h and not future-dated
             } else {
-                return Date().timeIntervalSince(job.firstSeenDate) <= 172800
+                let diff = Date().timeIntervalSince(job.firstSeenDate)
+                return diff <= 172800 && diff >= 0
             }
         }
         print("[JobManager] After 48h filter: \(filtered.count) jobs (was \(beforeDateFilter))")
@@ -131,9 +135,13 @@ class JobManager: ObservableObject {
         
         // Source filter
         if !sourcesFilter.isEmpty {
+            let beforeSourceFilter = filtered.count
             filtered = filtered.filter { job in
                 sourcesFilter.contains(job.source)
             }
+            print("[JobManager] After source filter: \(filtered.count) jobs (was \(beforeSourceFilter)), sources: \(sourcesFilter.map { $0.rawValue })")
+        } else {
+            print("[JobManager] Source filter empty - showing all \(filtered.count) jobs")
         }
 
         filterCache = FilterCache(
@@ -285,21 +293,13 @@ class JobManager: ObservableObject {
         setupInitialState()
         setupBindings()
         setupWakeNotification()
-        setupCacheInvalidation()
     }
-    
+
     // MARK: - Setup
     private func setupInitialState() {
         Task {
             await loadStoredData()
         }
-    }
-    
-    private func setupCacheInvalidation() {
-        allJobsCancellable = $allJobs
-            .sink { [weak self] _ in
-                self?.filterCache.invalidate()
-            }
     }
 
     private func setupBindings() {

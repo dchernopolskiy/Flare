@@ -88,7 +88,8 @@ struct JobListView: View {
         .onChange(of: selectedSources) { _, _ in filterPublisher.send() }
         .onChange(of: showOnlyStarred) { _, _ in filterPublisher.send() }
         .onChange(of: showOnlyApplied) { _, _ in filterPublisher.send() }
-        .onChange(of: jobManager.allJobs) { _, _ in
+        .onChange(of: jobManager.allJobs) { oldJobs, newJobs in
+            print("[JobListView] allJobs changed: \(oldJobs.count) -> \(newJobs.count)")
             updateFilteredJobs()
         }
     }
@@ -127,7 +128,7 @@ struct JobListHeader: View {
     @Binding var showOnlyApplied: Bool
     
     private var supportedSources: [JobSource] {
-        return [.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday]
+        return [.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday, .unknown]
             .filter { $0.isSupported }
             .sorted { $0.rawValue < $1.rawValue }
     }
