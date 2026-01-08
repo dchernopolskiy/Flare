@@ -73,7 +73,8 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         let limit = 20
         
         for page in 0..<5 {
-            
+            print("[Workday] Fetching page \(page + 1) for \(config.company) (offset: \(offset))...")
+
             let response = try await fetchJobsPage(
                 config: config,
                 session: session,
@@ -82,6 +83,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 locationIds: locationIds,
                 remoteType: nil
             )
+            print("[Workday] Page \(page + 1): received \(response.jobPostings.count) jobs")
             
             if response.jobPostings.isEmpty {
                 break
@@ -100,9 +102,11 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             offset += limit
             try await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
-        
+
+        print("[Workday] Finished fetching pages, total jobs: \(allJobs.count)")
+
         let shouldApplyLocationFilter = locationIds.isEmpty && !locationFilter.isEmpty
-        
+
         let filteredJobs: [Job]
         if shouldApplyLocationFilter {
             let locationKeywords = parseFilterString(locationFilter, includeRemote: false)
@@ -111,12 +115,15 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 titleKeywords: [],
                 locationKeywords: locationKeywords
             )
+            print("[Workday] After location filter: \(filteredJobs.count) jobs")
         } else {
             filteredJobs = allJobs
         }
 
-            await trackingService.saveTrackingData(filteredJobs, for: "workday_\(config.company)", currentDate: currentDate, retentionDays: 30)
-            return filteredJobs
+        print("[Workday] Saving tracking data for \(filteredJobs.count) jobs...")
+        await trackingService.saveTrackingData(filteredJobs, for: "workday_\(config.company)", currentDate: currentDate, retentionDays: 30)
+        print("[Workday] Returning \(filteredJobs.count) jobs for \(config.company)")
+        return filteredJobs
         } catch {
             print("[Workday] Error in fetchJobs: \(error)")
             print("[Workday] Error type: \(type(of: error))")
@@ -142,7 +149,8 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        
+        request.timeoutInterval = 30  // Add timeout to prevent hanging
+
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             print("[Workday] Invalid session response")
@@ -273,29 +281,34 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             return nil
         }
         
-        guard !workdayJob.externalPath.isEmpty else {
+        guard let externalPath = workdayJob.externalPath, !externalPath.isEmpty else {
             print("[Workday] Skipping job '\(title)': empty external path")
             return nil
         }
-        
-        let jobId = workdayJob.bulletFields.first ?? UUID().uuidString
-        
-        let pathComponents = workdayJob.externalPath.components(separatedBy: "/")
-        let titleSlug = pathComponents.last?.components(separatedBy: "_").first ?? title
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: ",", with: "")
-        
-        let jobURL = "https://\(config.company).\(config.instance).myworkdayjobs.com/en-US/\(config.siteName)/details/\(titleSlug)_\(jobId)"
-        
-        let postingDate = parsePostedDate(workdayJob.postedOn)
-        
+
+        let bulletFields = workdayJob.bulletFields ?? []
+
+        // Extract the job slug from externalPath (last path component)
+        // e.g., "/job/USA---Seattle-WA/Senior-Salesforce-System-Administrator_JR2025476878-1"
+        // -> "Senior-Salesforce-System-Administrator_JR2025476878-1"
+        let pathComponents = externalPath.components(separatedBy: "/")
+        let jobSlug = pathComponents.last ?? ""
+
+        // Extract the job ID for internal tracking (the part after the last underscore)
+        // e.g., "Senior-Salesforce-System-Administrator_JR2025476878-1" -> "JR2025476878-1"
+        let jobId = jobSlug.components(separatedBy: "_").last ?? bulletFields.first ?? UUID().uuidString
+
+        let jobURL = "https://\(config.company).\(config.instance).myworkdayjobs.com/en-US/\(config.siteName)/details/\(jobSlug)"
+
+        let postingDate = parsePostedDate(workdayJob.postedOn ?? "")
+
         let fullJobId = "workday-\(jobId)"
         let firstSeenDate = storedJobDates[fullJobId] ?? currentDate
-        
+
         return Job(
             id: fullJobId,
             title: title,
-            location: workdayJob.locationsText,
+            location: workdayJob.locationsText ?? "Unknown",
             postingDate: postingDate,
             url: jobURL,
             description: "",
@@ -306,7 +319,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 .map { $0.capitalized }
                 .joined(separator: " "),
             department: nil,
-            category: workdayJob.bulletFields.count > 1 ? workdayJob.bulletFields[1] : nil,
+            category: bulletFields.count > 1 ? bulletFields[1] : nil,
             firstSeenDate: firstSeenDate,
             originalPostingDate: nil,
             wasBumped: false
@@ -547,11 +560,11 @@ struct WorkdayResponse: Codable {
 
 struct WorkdayJobPosting: Codable {
     let title: String?
-    let externalPath: String
-    let locationsText: String
-    let postedOn: String
+    let externalPath: String?  // Some postings may not have this field
+    let locationsText: String?
+    let postedOn: String?
     let remoteType: String?
-    let bulletFields: [String]
+    let bulletFields: [String]?
 }
 
 struct WorkdayFacet: Codable {

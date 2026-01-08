@@ -24,8 +24,13 @@ struct SettingsView: View {
     @State private var enableMeta = true
     @State private var enableCustomBoards = true
     @State private var includeRemoteJobs = true
+    @State private var enableAIParser = false
     @State private var autoCheckForUpdates = true
     @State private var showSuccessMessage = false
+    @State private var isDownloadingModel = false
+    @State private var downloadProgress: Double = 0.0
+    @State private var downloadStatus: String = ""
+    @State private var modelSize: Double? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -126,7 +131,102 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    
+
+                    // AI Parsing Section
+                    SettingsSection(title: "AI-Powered Parsing") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle(isOn: $enableAIParser) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Enable AI job parsing")
+                                    Text("Uses local AI to extract jobs from unknown websites")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .onChange(of: enableAIParser) { _, newValue in
+                                if newValue {
+                                    checkAndDownloadModel()
+                                }
+                            }
+
+                            if enableAIParser {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    // Model Status
+                                    HStack(spacing: 8) {
+                                        Image(systemName: modelSize != nil ? "checkmark.circle.fill" : "arrow.down.circle")
+                                            .foregroundColor(modelSize != nil ? .green : .blue)
+
+                                        if let size = modelSize {
+                                            Text("Model downloaded (\(String(format: "%.2f", size)) GB)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        } else if isDownloadingModel {
+                                            Text("Downloading model...")
+                                                .font(.caption)
+                                                .foregroundColor(.blue)
+                                        } else {
+                                            Text("Model not downloaded")
+                                                .font(.caption)
+                                                .foregroundColor(.orange)
+                                        }
+
+                                        Spacer()
+                                    }
+
+                                    // Download Progress
+                                    if isDownloadingModel {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            ProgressView(value: downloadProgress, total: 1.0)
+                                                .progressViewStyle(.linear)
+
+                                            Text(downloadStatus)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+
+                                    // Download/Delete Button
+                                    HStack {
+                                        if modelSize == nil && !isDownloadingModel {
+                                            Button(action: { downloadModel() }) {
+                                                Label("Download AI Model (~2 GB)", systemImage: "arrow.down.circle.fill")
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                        } else if modelSize != nil {
+                                            Button(action: { deleteModel() }) {
+                                                Label("Delete Model", systemImage: "trash")
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .foregroundColor(.red)
+                                        }
+                                    }
+
+                                    Divider()
+
+                                    // Performance Note
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "info.circle")
+                                                .foregroundColor(.orange)
+                                                .font(.caption)
+                                            Text("Performance note")
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(.orange)
+                                        }
+                                        Text("AI parsing may be slower on Intel Macs (2016-2019). M1/M2 Macs will see excellent performance.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text("Only used as fallback when API/ATS detection fails.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.leading, 8)
+                                }
+                            }
+                        }
+                    }
+
                     // Job Filters Section
                     SettingsSection(title: "Job Filters") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -376,8 +476,14 @@ struct SettingsView: View {
         enableCustomBoards = jobManager.enableCustomBoards
         includeRemoteJobs = jobManager.includeRemoteJobs
         autoCheckForUpdates = jobManager.autoCheckForUpdates
+        enableAIParser = jobManager.enableAIParser
+
+        // Check model status
+        Task {
+            modelSize = await ModelDownloader.shared.getModelSize()
+        }
     }
-    
+
     private func saveSettings() {
         jobManager.jobTitleFilter = titleFilter
         jobManager.locationFilter = locationFilter
@@ -393,6 +499,7 @@ struct SettingsView: View {
         jobManager.enableCustomBoards = enableCustomBoards
         jobManager.includeRemoteJobs = includeRemoteJobs
         jobManager.autoCheckForUpdates = autoCheckForUpdates
+        jobManager.enableAIParser = enableAIParser
 
         Task {
             await jobManager.startMonitoring()
@@ -403,6 +510,59 @@ struct SettingsView: View {
         print("[Settings] Check for updates button pressed")
         print("[Settings] Calling appDelegate.checkForUpdatesNow()")
         appDelegate.checkForUpdatesNow()
+    }
+
+    // MARK: - AI Model Management
+
+    private func checkAndDownloadModel() {
+        Task {
+            // Always check model size when toggling AI on
+            modelSize = await ModelDownloader.shared.getModelSize()
+
+            let isDownloaded = await ModelDownloader.shared.isModelDownloaded()
+            if !isDownloaded {
+                downloadModel()
+            }
+        }
+    }
+
+    private func downloadModel() {
+        Task {
+            isDownloadingModel = true
+            downloadProgress = 0.0
+            downloadStatus = "Starting download..."
+
+            do {
+                _ = try await ModelDownloader.shared.downloadModel { progress, status in
+                    self.downloadProgress = progress
+                    self.downloadStatus = status
+                }
+
+                // Update model size BEFORE setting isDownloadingModel = false
+                // This prevents UI from jumping back to download button
+                modelSize = await ModelDownloader.shared.getModelSize()
+
+                // Small delay to ensure UI shows final state
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+
+                isDownloadingModel = false
+            } catch {
+                print("[Settings] Model download failed: \(error)")
+                isDownloadingModel = false
+                downloadStatus = "Download failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func deleteModel() {
+        Task {
+            do {
+                try await ModelDownloader.shared.deleteModel()
+                modelSize = nil
+            } catch {
+                print("[Settings] Failed to delete model: \(error)")
+            }
+        }
     }
 }
 

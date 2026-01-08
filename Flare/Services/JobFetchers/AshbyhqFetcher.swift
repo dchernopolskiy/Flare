@@ -17,11 +17,14 @@ actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
 
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let slug = extractAshbySlug(from: url)
+        print("[Ashby] Fetching jobs for: \(slug)")
+        print("[Ashby] Title filter: '\(titleFilter)', Location filter: '\(locationFilter)'")
 
         let storedJobDates = await trackingService.loadTrackingData(for: "ashby_\(slug)")
         let currentDate = Date()
-        
+
         let jobs = try await fetchJobsViaGraphQL(slug: slug)
+        print("[Ashby] GraphQL returned \(jobs.count) total jobs")
         
         let titleKeywords = parseFilterString(titleFilter, includeRemote: false)
         let locationKeywords = parseFilterString(locationFilter, includeRemote: false)

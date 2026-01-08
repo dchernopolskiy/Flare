@@ -56,13 +56,191 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             throw FetchError.decodingError(details: "Failed to decode HTML response")
         }
 
-        let jobs = parseHTML(html, baseURL: url, trackingData: trackingData, currentDate: currentDate)
+        // Try to extract jobs from embedded JSON data first
+        var jobs = parseEmbeddedJSON(html, trackingData: trackingData, currentDate: currentDate)
+
+        // Fallback to HTML parsing if JSON extraction fails
+        if jobs.isEmpty {
+            print("[Google] JSON extraction failed, falling back to HTML parsing")
+            jobs = parseHTML(html, baseURL: url, trackingData: trackingData, currentDate: currentDate)
+        }
 
         await trackingService.saveTrackingData(jobs, for: "google", currentDate: currentDate, retentionDays: 30)
 
         print("[Google] Fetched \(jobs.count) jobs")
         return jobs
     }
+
+    // MARK: - Embedded JSON Parsing
+
+    /// Parse jobs from the embedded JSON data structure in Google's career pages
+    /// The data is in format: data: [[[jobId, title, url, ...], ...], null, count, pageSize]
+    private func parseEmbeddedJSON(_ html: String, trackingData: [String: Date], currentDate: Date) -> [Job] {
+        var jobs: [Job] = []
+
+        // Look for the data array pattern - it starts after "data:" and contains job arrays
+        // Pattern: data: [[["jobId", "title", "url", ...], ...
+        guard let dataStart = html.range(of: "data: [[") else {
+            print("[Google] No embedded data array found")
+            return []
+        }
+
+        // Find the end of the data array by counting brackets
+        let searchStart = dataStart.lowerBound
+        var depth = 0
+        var inString = false
+        var escapeNext = false
+        var dataEnd: String.Index?
+        var foundStart = false
+
+        for i in html.indices[searchStart...] {
+            let char = html[i]
+
+            if escapeNext {
+                escapeNext = false
+                continue
+            }
+
+            if char == "\\" && inString {
+                escapeNext = true
+                continue
+            }
+
+            if char == "\"" {
+                inString = !inString
+                continue
+            }
+
+            if !inString {
+                if char == "[" {
+                    if !foundStart {
+                        foundStart = true
+                    }
+                    depth += 1
+                } else if char == "]" {
+                    depth -= 1
+                    if depth == 0 && foundStart {
+                        dataEnd = html.index(after: i)
+                        break
+                    }
+                }
+            }
+        }
+
+        guard let endIndex = dataEnd else {
+            print("[Google] Could not find end of data array")
+            return []
+        }
+
+        // Extract just the array portion (skip "data: ")
+        let dataStartIndex = html.index(dataStart.lowerBound, offsetBy: 6) // Skip "data: "
+        let jsonString = String(html[dataStartIndex..<endIndex])
+
+        // Unescape unicode sequences
+        let unescapedJSON = jsonString
+            .replacingOccurrences(of: "\\u003d", with: "=")
+            .replacingOccurrences(of: "\\u003c", with: "<")
+            .replacingOccurrences(of: "\\u003e", with: ">")
+            .replacingOccurrences(of: "\\u0026", with: "&")
+
+        guard let jsonData = unescapedJSON.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [Any],
+              let jobsArray = parsed.first as? [[Any]] else {
+            print("[Google] Failed to parse embedded JSON")
+            return []
+        }
+
+        print("[Google] Found \(jobsArray.count) jobs in embedded JSON")
+
+        for jobArray in jobsArray {
+            guard jobArray.count >= 8 else { continue }
+
+            // Structure: [jobId, title, url, [responsibilities], [qualifications], company, locale, [locations], ...]
+            guard let jobId = jobArray[0] as? String,
+                  let title = jobArray[1] as? String,
+                  let url = jobArray[2] as? String else {
+                continue
+            }
+
+            // Extract location from the locations array (index 7)
+            var location = "Not specified"
+            if jobArray.count > 7, let locationsArray = jobArray[7] as? [[Any]] {
+                let locationStrings = locationsArray.compactMap { locArray -> String? in
+                    // First element is the location string like "New York, NY, USA"
+                    return locArray.first as? String
+                }
+                if !locationStrings.isEmpty {
+                    location = locationStrings.joined(separator: "; ")
+                }
+            }
+
+            // Extract description from responsibilities (index 3) and qualifications (index 4)
+            var description = ""
+            if jobArray.count > 4 {
+                if let respArray = jobArray[3] as? [Any], respArray.count > 1,
+                   let responsibilities = respArray[1] as? String {
+                    description = stripHTML(responsibilities)
+                }
+                if let qualArray = jobArray[4] as? [Any], qualArray.count > 1,
+                   let qualifications = qualArray[1] as? String {
+                    let qualText = stripHTML(qualifications)
+                    if !description.isEmpty {
+                        description += "\n\n"
+                    }
+                    description += qualText
+                }
+            }
+
+            // Extract experience level from the experience array (index 10 if present)
+            var experienceLevel: String?
+            if jobArray.count > 10, let expArray = jobArray[10] as? [Int] {
+                // Experience levels: 2 = Mid, 3 = Senior, 4 = Lead/Staff
+                if expArray.contains(4) {
+                    experienceLevel = "Lead/Staff"
+                } else if expArray.contains(3) {
+                    experienceLevel = "Senior"
+                } else if expArray.contains(2) {
+                    experienceLevel = "Mid"
+                }
+            }
+
+            let fullJobId = "google-\(jobId)"
+            let firstSeenDate = trackingData[fullJobId] ?? currentDate
+
+            let job = Job(
+                id: fullJobId,
+                title: title,
+                location: location,
+                postingDate: nil,
+                url: url,
+                description: description,
+                workSiteFlexibility: nil,
+                source: .google,
+                companyName: "Google",
+                department: nil,
+                category: experienceLevel,
+                firstSeenDate: firstSeenDate,
+                originalPostingDate: nil,
+                wasBumped: false
+            )
+            jobs.append(job)
+        }
+
+        return jobs
+    }
+
+    private func stripHTML(_ html: String) -> String {
+        return html
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - HTML Parsing (Fallback)
 
     private func parseHTML(_ html: String, baseURL: URL, trackingData: [String: Date], currentDate: Date) -> [Job] {
         var jobs: [Job] = []
@@ -77,7 +255,7 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
 
         let matches = jobRegex.matches(in: html, range: NSRange(html.startIndex..., in: html))
 
-        for match in matches.prefix(100) { // Limit to 100 jobs
+        for match in matches.prefix(100) {
             guard let range = Range(match.range, in: html) else { continue }
             let jobHTML = String(html[range])
 
@@ -104,8 +282,21 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         }
 
         var location: String?
-        if let locationMatch = html.range(of: #"<span class="r0wTof[^"]*">([^<]+)</span>"#, options: .regularExpression) {
-            location = extractText(from: String(html[locationMatch]), pattern: #">([^<]+)<"#)
+        let locationPattern = #"<span class="r0wTof[^"]*">([^<]+)</span>"#
+        if let locationRegex = try? NSRegularExpression(pattern: locationPattern, options: []) {
+            let matches = locationRegex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+            var locations: [String] = []
+            for match in matches {
+                if let range = Range(match.range, in: html),
+                   let text = extractText(from: String(html[range]), pattern: #">([^<]+)<"#) {
+                    let cleaned = text.trimmingCharacters(in: .whitespaces)
+                        .replacingOccurrences(of: "^;\\s*", with: "", options: .regularExpression)
+                    if !cleaned.isEmpty && !locations.contains(cleaned) {
+                        locations.append(cleaned)
+                    }
+                }
+            }
+            location = locations.joined(separator: "; ")
         }
 
         var jobURL: String?
@@ -114,6 +305,8 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             if let path = path {
                 if path.hasPrefix("http") {
                     jobURL = path
+                } else if path.hasPrefix("/") {
+                    jobURL = "https://www.google.com\(path)"
                 } else {
                     jobURL = "https://www.google.com/about/careers/applications/\(path)"
                 }
@@ -141,7 +334,6 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
 
         guard let jobTitle = title, !jobTitle.isEmpty,
               let finalJobId = jobId else {
-            print("[Google] Skipping job: missing required fields")
             return nil
         }
 

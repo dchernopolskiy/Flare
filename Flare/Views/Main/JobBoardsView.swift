@@ -193,38 +193,71 @@ struct AddBoardSection: View {
     private var detectedSource: JobSource? {
         JobSource.detectFromURL(urlToUse.isEmpty ? newBoardURL : urlToUse)
     }
-    
+
     private var isDirectATSLink: Bool {
         guard !newBoardURL.isEmpty else { return false }
-        return JobSource.detectFromURL(newBoardURL) != nil
+        // Only consider it a "direct" link if it's a known, supported ATS platform
+        // .unknown means we don't recognize it - needs detection
+        if let source = JobSource.detectFromURL(newBoardURL) {
+            return source != .unknown && source.isSupported
+        }
+        return false
     }
-    
+
+    /// Whether AI parsing is enabled in settings
+    private var aiParsingEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "enableAIParser")
+    }
+
+    /// Whether detection has been completed (either found ATS or confirmed custom site)
+    private var detectionCompleted: Bool {
+        detectionResult != nil
+    }
+
+    /// Whether the detected ATS (or custom site with AI) can be added
     private var canAddBoard: Bool {
+        guard !newBoardURL.isEmpty else { return false }
+
+        // Direct ATS link - can add immediately
         if isDirectATSLink {
-            // Direct ATS link - can add immediately
             return detectedSource?.isSupported ?? false
-        } else {
-            // Not a direct link - need to detect first and have a valid detected URL
-            return !urlToUse.isEmpty && detectedSource?.isSupported ?? false
         }
+
+        // Non-ATS URL - must run detection first
+        guard detectionCompleted else { return false }
+
+        // Detection found a supported ATS
+        if let result = detectionResult,
+           let source = result.source,
+           source.isSupported {
+            return true
+        }
+
+        // Detection found custom site - can add if AI parsing enabled
+        if detectionResult?.source == nil || detectionResult?.source == .unknown {
+            return aiParsingEnabled
+        }
+
+        return false
     }
-    
+
+    /// Whether the "Detect ATS" button should be shown
     private var needsDetection: Bool {
+        guard !newBoardURL.isEmpty else { return false }
+
+        // Direct ATS link doesn't need detection
         if isDirectATSLink {
             return false
         }
-        
-        if let result = detectionResult,
-           (result.confidence == .likely || result.confidence == .certain),
-           result.source?.isSupported ?? false {
-            return false
-        }
-        
-        if !urlToUse.isEmpty {
-            return false
-        }
-        
-        return true
+
+        // Show detect button if we haven't detected yet
+        return !detectionCompleted
+    }
+
+    /// Whether this is a custom site (needs AI parsing)
+    private var isCustomSite: Bool {
+        guard detectionCompleted else { return false }
+        return detectionResult?.source == nil || detectionResult?.source == .unknown
     }
     
     var body: some View {
@@ -237,49 +270,23 @@ struct AddBoardSection: View {
             
             TextField("Board URL (job listing page)", text: $newBoardURL)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: newBoardURL) { _ in
+                .onChange(of: newBoardURL) { _, _ in
                     detectionResult = nil
                     urlToUse = ""
                 }
             
             if let result = detectionResult {
                 DetectionResultView(result: result)
-                
-                if let atsUrl = result.actualATSUrl, atsUrl != newBoardURL {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Detected ATS URL", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(.green)
-                            .fontWeight(.semibold)
-                        
-                        Text(atsUrl)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .background(Color.green.opacity(0.1))
-                            .cornerRadius(4)
-                        
-                        Text("✓ This URL will be used for the job board")
-                            .font(.caption2)
-                            .foregroundColor(.green)
-                            .fontWeight(.semibold)
-                    }
-                    .padding()
-                    .background(Color.green.opacity(0.05))
-                    .cornerRadius(8)
-                }
             }
             
             // Status message for direct ATS links
             if isDirectATSLink, let source = detectedSource {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Direct \(source.rawValue) link detected - ready to add")
+                    Image(systemName: source.icon)
+                        .foregroundColor(source.color)
+                    Text("Direct \(source.rawValue) link - ready to add")
                         .font(.caption)
-                        .foregroundColor(.green)
+                        .foregroundColor(.secondary)
                         .fontWeight(.medium)
                     if !source.isSupported {
                         Text("(Coming soon)")
@@ -289,17 +296,55 @@ struct AddBoardSection: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Color.green.opacity(0.1))
+                .background(Color.secondary.opacity(0.1))
                 .cornerRadius(6)
             }
-            
-            Text("Currently supported: Greenhouse, Ashbyhq, Lever, Workday • Coming soon: Workable, Jobvite, and more")
+
+            // Status message for custom sites after detection
+            if isCustomSite {
+                HStack(spacing: 6) {
+                    Image(systemName: aiParsingEnabled ? "cpu" : "exclamationmark.triangle.fill")
+                        .foregroundColor(aiParsingEnabled ? .blue : .orange)
+                    if aiParsingEnabled {
+                        Text("Custom career site - will use AI parsing")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                            .fontWeight(.medium)
+                    } else {
+                        Text("Custom site detected - enable AI parsing in Settings to add")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fontWeight(.medium)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background((aiParsingEnabled ? Color.blue : Color.orange).opacity(0.1))
+                .cornerRadius(6)
+            }
+
+            // Hint for non-ATS URLs
+            if !newBoardURL.isEmpty && !isDirectATSLink && !detectionCompleted {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(.secondary)
+                    Text("Click 'Detect ATS' to check if this site uses a known job board platform")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(6)
+            }
+
+            Text("Supported: Greenhouse, Ashbyhq, Lever, Workday, and custom sites with AI parsing")
                 .font(.caption)
                 .foregroundColor(.secondary)
-            
+
             // Action buttons
             HStack(spacing: 12) {
-                // Detect ATS button
+                // Detect ATS button - shown for non-ATS URLs that haven't been detected yet
                 if needsDetection {
                     Button(action: detectATS) {
                         HStack {
@@ -318,29 +363,41 @@ struct AddBoardSection: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(newBoardURL.isEmpty || isDetecting)
                 }
-                
-                // Add & Test button
-                if needsDetection {
-                    Button(action: addBoard) {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                            Text("Add & Test Board")
+
+                // Add & Test button - shown after detection or for direct ATS links
+                if !needsDetection || detectionCompleted {
+                    if needsDetection {
+                        // Secondary style when detect button is also shown
+                        Button(action: addBoard) {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                if isCustomSite {
+                                    Text("Add with AI Parsing")
+                                } else {
+                                    Text("Add & Test Board")
+                                }
+                            }
+                            .padding(.vertical, 8)
                         }
-                        .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!canAddBoard || testingBoardId != nil)
-                } else {
-                    Button(action: addBoard) {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                            Text("Add & Test Board")
+                        .buttonStyle(.bordered)
+                        .disabled(!canAddBoard || testingBoardId != nil)
+                    } else {
+                        // Primary style when it's the only button
+                        Button(action: addBoard) {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                if isCustomSite {
+                                    Text("Add with AI Parsing")
+                                } else {
+                                    Text("Add & Test Board")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canAddBoard || testingBoardId != nil)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canAddBoard || testingBoardId != nil)
                 }
                 
                 if testingBoardId != nil {
@@ -364,8 +421,15 @@ struct AddBoardSection: View {
     }
     
     private func addBoard() {
-        let finalUrl = urlToUse.isEmpty ? newBoardURL : urlToUse
-            
+        // Use detected ATS URL if available, otherwise use original URL
+        // For custom sites (isCustomSite), we use the original URL for AI parsing
+        let finalUrl: String
+        if !urlToUse.isEmpty && !isCustomSite {
+            finalUrl = urlToUse
+        } else {
+            finalUrl = newBoardURL
+        }
+
         guard let config = JobBoardConfig(
             name: newBoardName.isEmpty ? extractCompanyName(from: finalUrl) : newBoardName,
             url: finalUrl

@@ -16,7 +16,7 @@ actor PersistenceService {
     
     private init() {
         appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MicrosoftJobMonitor")
+            .appendingPathComponent("Flare")
         
         try? FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
     }

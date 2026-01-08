@@ -759,6 +759,9 @@ extension ATSDetectorService {
     @MainActor
     private func detectWithJavaScriptRendering(url: URL) async -> DetectionResult? {
         return await withCheckedContinuation { continuation in
+            print("[ATS Detector] Starting JavaScript rendering detection")
+            var hasResumed = false
+
             let webView = WKWebView()
             let navigationDelegate = ATSNavigationDelegate { detectedURL in
                 if let source = JobSource.detectFromURL(detectedURL) {
@@ -769,15 +772,18 @@ extension ATSDetectorService {
                         actualATSUrl: detectedURL,
                         message: "Detected \(source.rawValue) via JavaScript rendering"
                     )
-                    continuation.resume(returning: result)
+                    if !hasResumed {
+                        hasResumed = true
+                        continuation.resume(returning: result)
+                    }
                 }
             }
-            
+
             webView.navigationDelegate = navigationDelegate
             
-            // Enhanced JavaScript to detect ATS systems hidden in JS
+            // Enhanced JavaScript to detect ATS systems hidden in JS (including external scripts like GTM)
             let jsDetectionCode = """
-            (function() {
+            (async function() {
                 const results = {
                     workday: [],
                     greenhouse: [],
@@ -785,73 +791,98 @@ extension ATSDetectorService {
                     ashby: [],
                     beamery: [],
                     found: false,
-                    workdayConfig: null
+                    workdayConfig: null,
+                    gtmScanned: false
                 };
-                
-                // Check all scripts for ATS URLs
-                const scripts = document.querySelectorAll('script');
-                scripts.forEach(script => {
-                    const content = script.textContent || script.innerHTML || '';
-                    const src = script.src || '';
-                    
+
+                // Helper function to scan content for ATS URLs
+                function scanContentForATS(content) {
+                    // Helper to find URLs with both normal and escaped formats (GTM uses \\/ escaping)
+                    function findATSUrls(pattern, escapedPattern) {
+                        let matches = content.match(pattern) || [];
+                        let escaped = content.match(escapedPattern) || [];
+                        // Unescape the escaped URLs
+                        escaped = escaped.map(url => url.replace(/\\\\/g, ''));
+                        return [...matches, ...escaped];
+                    }
+
                     // Workday patterns
-                    const workdayRegex = /https?:\\/\\/[^"'\\s]*\\.myworkdayjobs\\.com[^"'\\s]*/g;
-                    const workdayMatches = content.match(workdayRegex) || src.match(workdayRegex);
-                    if (workdayMatches) {
+                    const workdayMatches = findATSUrls(
+                        /https?:\\/\\/[^"'\\s]*\\.myworkdayjobs\\.com[^"'\\s,\\]\\}]*/g,
+                        /https?:\\\\?\\/\\\\?\\/[^"'\\s]*\\.myworkdayjobs\\.com[^"'\\s,\\]\\}]*/g
+                    );
+                    if (workdayMatches.length > 0) {
                         results.workday = results.workday.concat(workdayMatches);
                         results.found = true;
                     }
-                    
-                    // Try to extract Workday config from Beamery
-                    const beameryConfigMatch = content.match(/wd[0-9]+\\.myworkdayjobs\\.com\\/(\\w+)\\/(\\w+)/);
-                    if (beameryConfigMatch) {
-                        results.workdayConfig = {
-                            company: beameryConfigMatch[0].split('.')[0],
-                            instance: beameryConfigMatch[0].match(/wd[0-9]+/)[0],
-                            siteName: beameryConfigMatch[2] || 'careers'
-                        };
-                    }
-                    
-                    // Also check for myworkdayjobs-impl.com
-                    const workdayImplRegex = /myworkdayjobs-impl\\.com/g;
-                    if (content.match(workdayImplRegex) || src.match(workdayImplRegex)) {
-                        results.workday.push('workday-impl-detected');
-                        results.found = true;
-                    }
-                    
-                    // Beamery patterns
-                    const beameryPatterns = ['beamery', 'pages.beamery.com', 'flows.beamery.com', 'beamery.referrers'];
-                    for (const pattern of beameryPatterns) {
-                        if (content.includes(pattern) || src.includes(pattern)) {
-                            results.beamery.push(pattern);
-                            results.found = true;
-                            // If Beamery is found, it's likely using Workday
-                            results.workday.push('via-beamery');
-                        }
-                    }
-                    
-                    // Greenhouse patterns
-                    const greenhouseRegex = /https?:\\/\\/[^"'\\s]*greenhouse\\.io[^"'\\s]*/g;
-                    const greenhouseMatches = content.match(greenhouseRegex) || src.match(greenhouseRegex);
-                    if (greenhouseMatches) {
+
+                    // Greenhouse patterns (boards.greenhouse.io, api.greenhouse.io)
+                    const greenhouseMatches = findATSUrls(
+                        /https?:\\/\\/[^"'\\s]*greenhouse\\.io[^"'\\s,\\]\\}]*/g,
+                        /https?:\\\\?\\/\\\\?\\/[^"'\\s]*greenhouse\\.io[^"'\\s,\\]\\}]*/g
+                    );
+                    if (greenhouseMatches.length > 0) {
                         results.greenhouse = results.greenhouse.concat(greenhouseMatches);
                         results.found = true;
                     }
-                    
-                    // Lever patterns
-                    const leverRegex = /https?:\\/\\/[^"'\\s]*lever\\.co[^"'\\s]*/g;
-                    const leverMatches = content.match(leverRegex) || src.match(leverRegex);
-                    if (leverMatches) {
+
+                    // Lever patterns (jobs.lever.co)
+                    const leverMatches = findATSUrls(
+                        /https?:\\/\\/[^"'\\s]*lever\\.co[^"'\\s,\\]\\}]*/g,
+                        /https?:\\\\?\\/\\\\?\\/[^"'\\s]*lever\\.co[^"'\\s,\\]\\}]*/g
+                    );
+                    if (leverMatches.length > 0) {
                         results.lever = results.lever.concat(leverMatches);
                         results.found = true;
                     }
-                    
-                    // Ashby patterns
-                    const ashbyRegex = /https?:\\/\\/[^"'\\s]*ashbyhq\\.com[^"'\\s]*/g;
-                    const ashbyMatches = content.match(ashbyRegex) || src.match(ashbyRegex);
-                    if (ashbyMatches) {
+
+                    // Ashby patterns (jobs.ashbyhq.com)
+                    const ashbyMatches = findATSUrls(
+                        /https?:\\/\\/[^"'\\s]*ashbyhq\\.com[^"'\\s,\\]\\}]*/g,
+                        /https?:\\\\?\\/\\\\?\\/[^"'\\s]*ashbyhq\\.com[^"'\\s,\\]\\}]*/g
+                    );
+                    if (ashbyMatches.length > 0) {
                         results.ashby = results.ashby.concat(ashbyMatches);
                         results.found = true;
+                    }
+
+                    // Beamery patterns (often used with Workday)
+                    const beameryPatterns = ['beamery', 'pages.beamery.com', 'flows.beamery.com'];
+                    for (const pattern of beameryPatterns) {
+                        if (content.includes(pattern)) {
+                            results.beamery.push(pattern);
+                            results.found = true;
+                        }
+                    }
+                }
+
+                // Fetch and scan GTM/external scripts
+                const externalScripts = document.querySelectorAll('script[src*="googletagmanager.com"], script[src*="gtm.js"]');
+                for (const script of externalScripts) {
+                    try {
+                        const response = await fetch(script.src);
+                        const content = await response.text();
+                        scanContentForATS(content);
+                        results.gtmScanned = true;
+                    } catch (e) {
+                        console.log('[ATS] Failed to fetch GTM script:', e);
+                    }
+                }
+
+                // Check all inline scripts for ATS URLs
+                const scripts = document.querySelectorAll('script');
+                scripts.forEach(script => {
+                    const content = script.textContent || script.innerHTML || '';
+                    scanContentForATS(content);
+
+                    // Try to extract Workday config from URLs found
+                    const beameryConfigMatch = content.match(/([\\w-]+)\\.wd([0-9]+)\\.myworkdayjobs\\.com\\/([\\w-]+)/);
+                    if (beameryConfigMatch) {
+                        results.workdayConfig = {
+                            company: beameryConfigMatch[1],
+                            instance: 'wd' + beameryConfigMatch[2],
+                            siteName: beameryConfigMatch[3]
+                        };
                     }
                 });
                 
@@ -859,89 +890,132 @@ extension ATSDetectorService {
                 const iframes = document.querySelectorAll('iframe');
                 iframes.forEach(iframe => {
                     const src = iframe.src || '';
-                    if (src.includes('myworkdayjobs.com')) {
-                        results.workday.push(src);
-                        results.found = true;
-                    }
-                    if (src.includes('greenhouse.io')) {
-                        results.greenhouse.push(src);
-                        results.found = true;
-                    }
-                    if (src.includes('lever.co')) {
-                        results.lever.push(src);
-                        results.found = true;
-                    }
-                    if (src.includes('ashbyhq.com')) {
-                        results.ashby.push(src);
-                        results.found = true;
-                    }
-                    if (src.includes('beamery.com')) {
-                        results.beamery.push(src);
-                        results.found = true;
-                    }
+                    scanContentForATS(src);
                 });
-                
+
+                // Deduplicate results
+                results.workday = [...new Set(results.workday)];
+                results.greenhouse = [...new Set(results.greenhouse)];
+                results.lever = [...new Set(results.lever)];
+                results.ashby = [...new Set(results.ashby)];
+                results.beamery = [...new Set(results.beamery)];
+
+                // Also extract Workday config from results if not already found
+                if (!results.workdayConfig && results.workday.length > 0) {
+                    for (const url of results.workday) {
+                        const match = url.match(/([\\w-]+)\\.wd([0-9]+)\\.myworkdayjobs\\.com\\/([\\w-]+)/);
+                        if (match) {
+                            results.workdayConfig = {
+                                company: match[1],
+                                instance: 'wd' + match[2],
+                                siteName: match[3]
+                            };
+                            break;
+                        }
+                    }
+                }
+
                 return JSON.stringify(results);
             })();
             """
             
             webView.load(URLRequest(url: url))
-            
+
+            // Add timeout to prevent hanging
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                if !hasResumed {
+                    print("[ATS Detector] JavaScript rendering timed out after 10s")
+                    hasResumed = true
+                    continuation.resume(returning: nil)
+                }
+            }
+
             // Wait for page to load and execute detection
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                webView.evaluateJavaScript(jsDetectionCode) { result, error in
-                    guard let jsonString = result as? String,
-                          let data = jsonString.data(using: .utf8),
-                          let detection = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        continuation.resume(returning: nil)
-                        return
-                    }
-                    
-                    // Process results
-                    var detectedSource: JobSource?
-                    var detectedURL: String?
-                    
-                    if let beameryURLs = detection["beamery"] as? [String], !beameryURLs.isEmpty {
-                        detectedSource = .workday
-                        
+            // Increase wait time to 5s to allow GTM scripts to load
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                // Wrap the async IIFE call to handle the Promise
+                let wrappedCode = """
+                (async () => {
+                    return await \(jsDetectionCode)
+                })()
+                """
+                webView.callAsyncJavaScript(wrappedCode, arguments: [:], in: nil, in: .page) { result in
+                    switch result {
+                    case .success(let value):
+                        guard let jsonString = value as? String,
+                              let data = jsonString.data(using: .utf8),
+                              let detection = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                            print("[ATS Detector] Failed to parse JavaScript results")
+                            if !hasResumed {
+                                hasResumed = true
+                                continuation.resume(returning: nil)
+                            }
+                            return
+                        }
+
+                        // Process results
+                        var detectedSource: JobSource?
+                        var detectedURL: String?
+
+                        // Check for Workday config first (most reliable)
                         if let config = detection["workdayConfig"] as? [String: Any],
                            let company = config["company"] as? String,
                            let instance = config["instance"] as? String,
                            let siteName = config["siteName"] as? String {
+                            detectedSource = .workday
                             detectedURL = "https://\(company).\(instance).myworkdayjobs.com/\(siteName)"
                             print("🟢 [ATS] Extracted Workday config: \(detectedURL ?? "none")")
-                        } else {
+                        } else if let workdayURLs = detection["workday"] as? [String], !workdayURLs.isEmpty {
+                            detectedSource = .workday
+                            if let firstURL = workdayURLs.first(where: { $0.contains("myworkdayjobs.com") && !$0.contains("via-beamery") && !$0.contains("workday-impl") }) {
+                                detectedURL = firstURL
+                            } else {
+                                detectedURL = workdayURLs.first
+                            }
+                        } else if let beameryURLs = detection["beamery"] as? [String], !beameryURLs.isEmpty {
+                            detectedSource = .workday
                             detectedURL = "Beamery-powered Workday site detected"
+                        } else if let greenhouseURLs = detection["greenhouse"] as? [String], !greenhouseURLs.isEmpty {
+                            detectedSource = .greenhouse
+                            detectedURL = greenhouseURLs.first
+                        } else if let leverURLs = detection["lever"] as? [String], !leverURLs.isEmpty {
+                            detectedSource = .lever
+                            detectedURL = leverURLs.first
+                        } else if let ashbyURLs = detection["ashby"] as? [String], !ashbyURLs.isEmpty {
+                            detectedSource = .ashby
+                            detectedURL = ashbyURLs.first
                         }
-                    } else if let workdayURLs = detection["workday"] as? [String], !workdayURLs.isEmpty {
-                        detectedSource = .workday
-                        if let firstURL = workdayURLs.first(where: { $0.contains("myworkdayjobs.com") && !$0.contains("via-beamery") && !$0.contains("workday-impl") }) {
-                            detectedURL = firstURL
+
+                        let gtmScanned = (detection["gtmScanned"] as? Bool) ?? false
+                        print("[ATS Detector] GTM scanned: \(gtmScanned)")
+
+                        if let source = detectedSource {
+                            let result = DetectionResult(
+                                source: source,
+                                confidence: .certain,
+                                apiEndpoint: nil,
+                                actualATSUrl: detectedURL ?? url.absoluteString,
+                                message: "Detected \(source.rawValue) via JavaScript analysis\(gtmScanned ? " (including GTM)" : "")"
+                            )
+                            print("[ATS Detector] Successfully detected \(source.rawValue) via JS")
+                            if !hasResumed {
+                                hasResumed = true
+                                continuation.resume(returning: result)
+                            }
                         } else {
-                            detectedURL = workdayURLs.first
+                            print("[ATS Detector] No ATS detected via JavaScript")
+                            if !hasResumed {
+                                hasResumed = true
+                                continuation.resume(returning: nil)
+                            }
                         }
-                    } else if let greenhouseURLs = detection["greenhouse"] as? [String], !greenhouseURLs.isEmpty {
-                        detectedSource = .greenhouse
-                        detectedURL = greenhouseURLs.first
-                    } else if let leverURLs = detection["lever"] as? [String], !leverURLs.isEmpty {
-                        detectedSource = .lever
-                        detectedURL = leverURLs.first
-                    } else if let ashbyURLs = detection["ashby"] as? [String], !ashbyURLs.isEmpty {
-                        detectedSource = .ashby
-                        detectedURL = ashbyURLs.first
-                    }
-                    
-                    if let source = detectedSource {
-                        let result = DetectionResult(
-                            source: source,
-                            confidence: .certain,
-                            apiEndpoint: nil,
-                            actualATSUrl: detectedURL ?? url.absoluteString,
-                            message: "Detected \(source.rawValue) via JavaScript analysis"
-                        )
-                        continuation.resume(returning: result)
-                    } else {
-                        continuation.resume(returning: nil)
+
+                    case .failure(let error):
+                        print("[ATS Detector] JavaScript evaluation error: \(error.localizedDescription)")
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume(returning: nil)
+                        }
                     }
                 }
             }

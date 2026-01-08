@@ -15,12 +15,11 @@ struct JobListView: View {
     let isWindowMinimized: Bool
     
     @State private var searchText = ""
-    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday].filter { $0.isSupported })
+    @State private var selectedSources: Set<JobSource> = Set([.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday, .unknown].filter { $0.isSupported })
     @State private var showOnlyStarred = false
     @State private var showOnlyApplied = false
     @State private var cachedJobs: [Job] = []
-    @State private var lastFilterUpdate = Date()
-    
+
     private let filterPublisher = PassthroughSubject<Void, Never>()
     @State private var filterCancellable: AnyCancellable?
     
@@ -81,23 +80,21 @@ struct JobListView: View {
             setupFilterDebouncing()
             updateFilteredJobs()
         }
-        .onChange(of: searchText) { _ in filterPublisher.send() }
-        .onChange(of: selectedSources) { _ in filterPublisher.send() }
-        .onChange(of: showOnlyStarred) { _ in filterPublisher.send() }
-        .onChange(of: showOnlyApplied) { _ in filterPublisher.send() }
-        .onChange(of: jobManager.allJobs) { _ in
-            updateFilteredJobs()
-        }
+        .onChange(of: searchText) { _, _ in filterPublisher.send() }
+        .onChange(of: selectedSources) { _, _ in filterPublisher.send() }
+        .onChange(of: showOnlyStarred) { _, _ in filterPublisher.send() }
+        .onChange(of: showOnlyApplied) { _, _ in filterPublisher.send() }
+        .onChange(of: jobManager.allJobs) { _, _ in updateFilteredJobs() }
     }
     
     private func setupFilterDebouncing() {
         filterCancellable = filterPublisher
             .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
-            .sink { _ in
-                updateFilteredJobs()
+            .sink { [weak self] _ in
+                self?.updateFilteredJobs()
             }
     }
-    
+
     private func updateFilteredJobs() {
         withAnimation(.easeInOut(duration: 0.2)) {
             cachedJobs = jobManager.getFilteredJobs(
@@ -107,7 +104,6 @@ struct JobListView: View {
                 showStarred: showOnlyStarred,
                 showApplied: showOnlyApplied
             )
-            print("[JobListView] Updated filtered jobs: \(cachedJobs.count) jobs from \(jobManager.allJobs.count) total")
         }
     }
 }
@@ -121,7 +117,7 @@ struct JobListHeader: View {
     @Binding var showOnlyApplied: Bool
     
     private var supportedSources: [JobSource] {
-        return [.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday]
+        return [.microsoft, .apple, .google, .tiktok, .snap, .amd, .meta, .greenhouse, .lever, .ashby, .workday, .unknown]
             .filter { $0.isSupported }
             .sorted { $0.rawValue < $1.rawValue }
     }

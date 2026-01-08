@@ -47,3 +47,14 @@ backup/ashby_openai_tracking.json
 backup/ashby_Notion_tracking.json
 backup/ashby_elevenlabs_tracking.json
 backup/ashby_Character_tracking.json
+
+# LLM Models (download on first use)
+*.gguf
+Flare/Resources/Models/*.gguf
+Flare.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
+.DS_Store
+Flare.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
+.DS_Store
+.DS_Store
+Flare.xcodeproj/project.pbxproj
+/BackupData

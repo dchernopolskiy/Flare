@@ -9,6 +9,14 @@
 import Foundation
 import WebKit
 
+/// Simple Codable struct for decoding JavaScript job results
+private struct UniversalJob: Codable {
+    let id: String
+    let title: String
+    let location: String
+    let url: String
+}
+
 actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
     
     // MARK: - Pattern Configurations for Common Job Board Layouts
@@ -87,100 +95,257 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         return await withCheckedContinuation { continuation in
             let webView = WKWebView()
             webView.load(URLRequest(url: url))
-            
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                let jsCode = """
-                (function() {
-                    const jobs = [];
-                    
-                    const patterns = [
-                        { container: '.job-listing, .job-item, .career-opportunity', title: 'h2, h3, .title', location: '.location' },
-                        { container: '[data-job], [data-position]', title: '[data-title], .job-title', location: '[data-location]' },
-                        { container: 'article, .card', title: 'h3 a, .card-title', location: '.location, .office' },
-                        { container: 'tr', title: 'td:first-child a', location: 'td:nth-child(2)' }
-                    ];
-                    
-                    for (const pattern of patterns) {
-                        const containers = document.querySelectorAll(pattern.container);
-                        if (containers.length > 0) {
-                            containers.forEach(container => {
-                                const titleElem = container.querySelector(pattern.title);
-                                const locationElem = container.querySelector(pattern.location);
-                                
-                                if (titleElem && titleElem.textContent.trim()) {
-                                    const linkElem = container.querySelector('a[href]');
-                                    const job = {
-                                        title: titleElem.textContent.trim(),
-                                        location: locationElem ? locationElem.textContent.trim() : 'Not specified',
-                                        url: linkElem ? linkElem.href : window.location.href,
-                                        id: 'universal-' + Math.random().toString(36).substr(2, 9)
-                                    };
-                                    jobs.push(job);
+                let radancyAPICode = """
+                (async function() {
+                    if (window.__PRELOAD_STATE__ && window.__PRELOAD_STATE__.jobSearch) {
+                        const jobData = window.__PRELOAD_STATE__.jobSearch;
+                        const totalJobs = jobData.totalJob || 0;
+                        const preloadedJobs = (jobData.jobs || []).length;
+
+                        if (totalJobs > preloadedJobs) {
+                            console.log('[Radancy] Detected pagination: ' + preloadedJobs + '/' + totalJobs + ' jobs preloaded');
+
+                            const params = jobData.params || {};
+                            const searchParams = new URLSearchParams(window.location.search);
+
+                            Object.keys(params).forEach(key => {
+                                if (!searchParams.has(key) && params[key]) {
+                                    searchParams.set(key, params[key]);
                                 }
                             });
-                            
-                            if (jobs.length > 0) break;
+
+                            const apiUrl = window.location.origin + '/api/get-jobs?' + searchParams.toString();
+                            console.log('[Radancy] Fetching all jobs from: ' + apiUrl);
+
+                            try {
+                                const response = await fetch(apiUrl, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'Accept': 'application/json'
+                                    },
+                                    body: JSON.stringify({disable_switch_search_mode: false})
+                                });
+
+                                if (response.ok) {
+                                    const data = await response.json();
+                                    const allJobs = data.jobs || [];
+                                    console.log('[Radancy] API returned ' + allJobs.length + ' jobs');
+
+                                    if (allJobs.length > 0) {
+                                        const jobs = [];
+                                        allJobs.forEach(job => {
+                                            let loc = 'Not specified';
+                                            if (job.location) {
+                                                loc = job.location;
+                                            } else if (job.locations && job.locations.length > 0) {
+                                                const firstLoc = job.locations[0];
+                                                loc = firstLoc.cityState || firstLoc.city || firstLoc.locationText || 'Not specified';
+                                            }
+
+                                            let jobUrl = job.applyURL || job.applyUrl || job.url || job.originalURL || '';
+                                            if (jobUrl && !jobUrl.startsWith('http')) {
+                                                jobUrl = window.location.origin + '/job/' + jobUrl;
+                                            }
+                                            if (!jobUrl) jobUrl = window.location.href;
+
+                                            jobs.push({
+                                                title: job.title || job.jobTitle || '',
+                                                location: loc,
+                                                url: jobUrl,
+                                                id: 'radancy-api-' + (job.requisitionID || job.uniqueID || job.id || Math.random().toString(36).substr(2, 9))
+                                            });
+                                        });
+                                        return JSON.stringify(jobs);
+                                    }
+                                }
+                            } catch (e) {
+                                console.log('[Radancy] API fetch failed: ' + e.message);
+                            }
                         }
                     }
-                    
-                    // If no jobs found with patterns, try finding all job-like links
-                    if (jobs.length === 0) {
-                        const links = document.querySelectorAll('a[href*="job"], a[href*="career"], a[href*="position"], a[href*="opening"]');
-                        links.forEach(link => {
-                            const text = link.textContent.trim();
-                            if (text.length > 10 && text.length < 200 && !text.includes('View all')) {
-                                jobs.push({
-                                    title: text,
-                                    location: 'See job details',
-                                    url: link.href,
-                                    id: 'universal-' + Math.random().toString(36).substr(2, 9)
-                                });
-                            }
-                        });
-                    }
-                    
-                    return JSON.stringify(jobs);
-                })();
+                    return null;
+                })()
                 """
-                
-                webView.evaluateJavaScript(jsCode) { result, error in
-                    guard let jsonString = result as? String,
-                          let data = jsonString.data(using: .utf8),
-                          let extractedJobs = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                        continuation.resume(returning: [])
-                        return
+
+                webView.evaluateJavaScript(radancyAPICode) { (result, error) in
+                    if let jsonString = result as? String, !jsonString.isEmpty {
+                        if let data = jsonString.data(using: .utf8),
+                           let jobsArray = try? JSONDecoder().decode([UniversalJob].self, from: data) {
+                            let detectedSource = self.detectSource(from: url)
+                            let jobs = jobsArray.map { job in
+                                Job(
+                                    id: job.id,
+                                    title: job.title,
+                                    location: job.location,
+                                    postingDate: nil,
+                                    url: job.url,
+                                    description: "",
+                                    workSiteFlexibility: nil,
+                                    source: detectedSource,
+                                    companyName: URL(string: job.url).flatMap { self.extractCompanyName(from: $0) } ?? "Unknown Company",
+                                    department: nil,
+                                    category: nil,
+                                    firstSeenDate: Date(),
+                                    originalPostingDate: nil,
+                                    wasBumped: false
+                                )
+                            }
+                            print("[Universal] Radancy API returned \(jobs.count) jobs")
+                            continuation.resume(returning: jobs)
+                            return
+                        }
                     }
-                    
-                    let detectedSource = self.detectSource(from: url)
 
-                    let jobs = extractedJobs.compactMap { jobDict -> Job? in
-                        guard let title = jobDict["title"] as? String,
-                              let jobUrl = jobDict["url"] as? String,
-                              let id = jobDict["id"] as? String else { return nil }
-
-                        let companyName = URL(string: jobUrl).flatMap { self.extractCompanyName(from: $0) } ?? "Unknown Company"
-
-                        return Job(
-                            id: id,
-                            title: title,
-                            location: jobDict["location"] as? String ?? "Not specified",
-                            postingDate: nil,
-                            url: jobUrl,
-                            description: "",
-                            workSiteFlexibility: nil,
-                            source: detectedSource,
-                            companyName: companyName,
-                            department: nil,
-                            category: nil,
-                            firstSeenDate: Date(),
-                            originalPostingDate: nil,
-                            wasBumped: false
-                        )
-                    }
-                    
-                    continuation.resume(returning: jobs)
+                    self.runStandardExtraction(webView: webView, url: url, continuation: continuation)
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func runStandardExtraction(webView: WKWebView, url: URL, continuation: CheckedContinuation<[Job], Never>) {
+        let jsCode = """
+        (function() {
+            const jobs = [];
+
+            if (window.__PRELOAD_STATE__ && window.__PRELOAD_STATE__.jobSearch) {
+                const jobData = window.__PRELOAD_STATE__.jobSearch;
+                const jobList = jobData.jobs || jobData.results || [];
+                if (jobList.length > 0) {
+                    jobList.forEach(job => {
+                        let loc = 'Not specified';
+                        if (job.location) {
+                            loc = job.location;
+                        } else if (job.locations && job.locations.length > 0) {
+                            const firstLoc = job.locations[0];
+                            loc = firstLoc.cityState || firstLoc.city || firstLoc.locationText || 'Not specified';
+                        } else if (job.city) {
+                            loc = job.city;
+                        }
+
+                        let jobUrl = job.applyURL || job.applyUrl || job.url || job.jobUrl || job.originalURL || '';
+                        if (jobUrl && !jobUrl.startsWith('http')) {
+                            jobUrl = window.location.origin + '/job/' + jobUrl;
+                        }
+                        if (!jobUrl) jobUrl = window.location.href;
+
+                        jobs.push({
+                            title: job.title || job.jobTitle || '',
+                            location: loc,
+                            url: jobUrl,
+                            id: 'preload-' + (job.jobId || job.requisitionID || job.id || Math.random().toString(36).substr(2, 9))
+                        });
+                    });
+                    return JSON.stringify(jobs);
+                }
+            }
+
+            if (window.__INITIAL_STATE__) {
+                const state = window.__INITIAL_STATE__;
+                const jobList = state.jobs || state.positions || state.listings ||
+                                (state.jobSearch && state.jobSearch.jobs) || [];
+                if (jobList.length > 0) {
+                    jobList.forEach(job => {
+                        jobs.push({
+                            title: job.title || job.jobTitle || '',
+                            location: job.location || job.city || 'Not specified',
+                            url: job.url || job.applyUrl || window.location.href,
+                            id: 'initial-' + (job.id || Math.random().toString(36).substr(2, 9))
+                        });
+                    });
+                    return JSON.stringify(jobs);
+                }
+            }
+
+            const patterns = [
+                { container: '.job-listing, .job-item, .career-opportunity', title: 'h2, h3, .title', location: '.location' },
+                { container: '[data-job], [data-position]', title: '[data-title], .job-title', location: '[data-location]' },
+                { container: 'article, .card', title: 'h3 a, .card-title', location: '.location, .office' },
+                { container: 'tr', title: 'td:first-child a', location: 'td:nth-child(2)' }
+            ];
+
+            for (const pattern of patterns) {
+                const containers = document.querySelectorAll(pattern.container);
+                if (containers.length > 0) {
+                    containers.forEach(container => {
+                        const titleElem = container.querySelector(pattern.title);
+                        const locationElem = container.querySelector(pattern.location);
+
+                        if (titleElem && titleElem.textContent.trim()) {
+                            const linkElem = container.querySelector('a[href]');
+                            const job = {
+                                title: titleElem.textContent.trim(),
+                                location: locationElem ? locationElem.textContent.trim() : 'Not specified',
+                                url: linkElem ? linkElem.href : window.location.href,
+                                id: 'universal-' + Math.random().toString(36).substr(2, 9)
+                            };
+                            jobs.push(job);
+                        }
+                    });
+
+                    if (jobs.length > 0) break;
+                }
+            }
+
+            // If no jobs found with patterns, try finding all job-like links
+            if (jobs.length === 0) {
+                const links = document.querySelectorAll('a[href*="job"], a[href*="career"], a[href*="position"], a[href*="opening"]');
+                links.forEach(link => {
+                    const text = link.textContent.trim();
+                    if (text.length > 10 && text.length < 200 && !text.includes('View all')) {
+                        jobs.push({
+                            title: text,
+                            location: 'See job details',
+                            url: link.href,
+                            id: 'universal-' + Math.random().toString(36).substr(2, 9)
+                        });
+                    }
+                });
+            }
+
+            return JSON.stringify(jobs);
+        })();
+        """
+
+        webView.evaluateJavaScript(jsCode) { result, error in
+            guard let jsonString = result as? String,
+                  let data = jsonString.data(using: .utf8),
+                  let extractedJobs = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                continuation.resume(returning: [])
+                return
+            }
+
+            let detectedSource = self.detectSource(from: url)
+
+            let jobs = extractedJobs.compactMap { jobDict -> Job? in
+                guard let title = jobDict["title"] as? String,
+                      let jobUrl = jobDict["url"] as? String,
+                      let id = jobDict["id"] as? String else { return nil }
+
+                let companyName = URL(string: jobUrl).flatMap { self.extractCompanyName(from: $0) } ?? "Unknown Company"
+
+                return Job(
+                    id: id,
+                    title: title,
+                    location: jobDict["location"] as? String ?? "Not specified",
+                    postingDate: nil,
+                    url: jobUrl,
+                    description: "",
+                    workSiteFlexibility: nil,
+                    source: detectedSource,
+                    companyName: companyName,
+                    department: nil,
+                    category: nil,
+                    firstSeenDate: Date(),
+                    originalPostingDate: nil,
+                    wasBumped: false
+                )
+            }
+
+            continuation.resume(returning: jobs)
         }
     }
     
