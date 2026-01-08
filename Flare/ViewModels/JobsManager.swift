@@ -33,7 +33,6 @@ class JobManager: ObservableObject {
             }
             // Invalidate filter cache synchronously to ensure fresh results on next query
             filterCache.invalidate()
-            print("[JobManager] allJobs didSet: \(allJobs.count) jobs, cache invalidated")
         }
     }
     private var allJobsSorted: [Job] = []
@@ -47,11 +46,8 @@ class JobManager: ObservableObject {
     @Published var appliedJobIds: Set<String> = []
     @Published var fetchStatistics = FetchStatistics()
     @Published var starredJobIds: Set<String> = []
-    @Published private var cachedFilteredJobs: [Job] = []
     @Published private var filterCache = FilterCache()
-    private var filterCancellable: AnyCancellable?
-    
-    
+
     struct FilterCache {
         var lastTitleFilter: String = ""
         var lastLocationFilter: String = ""
@@ -84,15 +80,13 @@ class JobManager: ObservableObject {
         showStarred: Bool = false,
         showApplied: Bool = false
     ) -> [Job] {
-        print("[JobManager] getFilteredJobs called - titleFilter: '\(titleFilter)', allJobs: \(allJobs.count)")
-
         if filterCache.isValid(titleFilter: titleFilter, locationFilter: locationFilter, sources: sourcesFilter, allJobs: allJobs) {
-            print("[JobManager] Using cached filter results")
             return applyStatusFilters(filterCache.cachedJobs, showStarred: showStarred, showApplied: showApplied)
         }
 
         var filtered = allJobsSorted
-        let beforeDateFilter = filtered.count
+
+        // 48h date filter
         filtered = filtered.filter { job in
             if job.isBumpedRecently {
                 return true
@@ -106,22 +100,18 @@ class JobManager: ObservableObject {
                 return diff <= 172800 && diff >= 0
             }
         }
-        print("[JobManager] After 48h filter: \(filtered.count) jobs (was \(beforeDateFilter))")
 
         // Title filter
         if !titleFilter.isEmpty {
             let keywords = titleFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            print("[JobManager] Applying title filter with keywords: \(keywords)")
-            let beforeTitleFilter = filtered.count
             filtered = filtered.filter { job in
                 let jobTitle = job.title.lowercased()
                 return keywords.contains { keyword in
                     jobTitle.contains(keyword)
                 }
             }
-            print("[JobManager] After title filter: \(filtered.count) jobs (was \(beforeTitleFilter))")
         }
-        
+
         // Location filter
         if !locationFilter.isEmpty {
             let keywords = locationFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -132,16 +122,12 @@ class JobManager: ObservableObject {
                 }
             }
         }
-        
+
         // Source filter
         if !sourcesFilter.isEmpty {
-            let beforeSourceFilter = filtered.count
             filtered = filtered.filter { job in
                 sourcesFilter.contains(job.source)
             }
-            print("[JobManager] After source filter: \(filtered.count) jobs (was \(beforeSourceFilter)), sources: \(sourcesFilter.map { $0.rawValue })")
-        } else {
-            print("[JobManager] Source filter empty - showing all \(filtered.count) jobs")
         }
 
         filterCache = FilterCache(
