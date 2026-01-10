@@ -72,9 +72,9 @@ struct JobBoardsView: View {
         ) { result in
             switch result {
             case .success:
-                importResult = "✅ Exported successfully!"
+                importResult = "Exported successfully!"
             case .failure(let error):
-                importResult = "❌ Export failed: \(error.localizedDescription)"
+                importResult = "Export failed: \(error.localizedDescription)"
             }
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -93,12 +93,12 @@ struct JobBoardsView: View {
                 let result = monitor.importBoards(from: content)
                 
                 if result.failed.isEmpty {
-                    importResult = "✅ Imported \(result.added) boards successfully!"
+                    importResult = "Imported \(result.added) boards successfully!"
                 } else {
                     importResult = "Imported \(result.added) boards, \(result.failed.count) failed"
                 }
             } catch {
-                importResult = "❌ Import failed: \(error.localizedDescription)"
+                importResult = "Import failed: \(error.localizedDescription)"
             }
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
@@ -106,7 +106,7 @@ struct JobBoardsView: View {
             }
             
         case .failure(let error):
-            importResult = "❌ Import failed: \(error.localizedDescription)"
+            importResult = "Import failed: \(error.localizedDescription)"
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 importResult = nil
@@ -155,16 +155,14 @@ struct ImportExportSection: View {
                 HStack {
                     Text(result)
                         .font(.callout)
-                        .foregroundColor(result.hasPrefix("✅") ? .green : result.hasPrefix("❌") ? .orange : .red)
+                        .foregroundColor(result.contains("successfully") ? .green : .red)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(result.hasPrefix("✅") ? Color.green.opacity(0.1) :
-                              result.hasPrefix("❌") ? Color.orange.opacity(0.1) :
-                              Color.red.opacity(0.1))
+                        .fill(result.contains("successfully") ? Color.green.opacity(0.1) : Color.red.opacity(0.1))
                 )
             }
             
@@ -532,7 +530,7 @@ struct TestResultsView: View {
                         Spacer()
                         Text(result)
                             .font(.callout)
-                            .foregroundColor(result.hasPrefix("✅") ? .green : .red)
+                            .foregroundColor(result.hasPrefix("Found") ? .green : .red)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)

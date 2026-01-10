@@ -14,11 +14,50 @@ actor TikTokJobFetcher: JobFetcherProtocol {
 
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
         let locationCodes = LocationService.getTikTokLocationCodes(location)
+        let trackingData = await trackingService.loadTrackingData(for: "tiktok")
+        let currentDate = Date()
+
+        // Fetch jobs with regular location
+        var allJobs = try await fetchJobsWithParams(
+            titleKeywords: titleKeywords,
+            locationCodes: locationCodes,
+            maxPages: maxPages,
+            trackingData: trackingData,
+            currentDate: currentDate
+        )
+
+        // Also fetch remote jobs by adding "remote" to keyword search
+        if !location.lowercased().contains("remote") && !titleKeywords.contains(where: { $0.lowercased().contains("remote") }) {
+            var remoteKeywords = titleKeywords
+            remoteKeywords.append("remote")
+
+            let remoteJobs = try await fetchJobsWithParams(
+                titleKeywords: remoteKeywords,
+                locationCodes: [],  // No location filter for remote
+                maxPages: min(maxPages, 5),  // Limit pages for remote search
+                trackingData: trackingData,
+                currentDate: currentDate
+            )
+
+            let existingIds = Set(allJobs.map { $0.id })
+            let newRemoteJobs = remoteJobs.filter { !existingIds.contains($0.id) }
+            allJobs.append(contentsOf: newRemoteJobs)
+        }
+
+        await trackingService.saveTrackingData(allJobs, for: "tiktok", currentDate: currentDate, retentionDays: 30)
+        return allJobs
+    }
+
+    private func fetchJobsWithParams(
+        titleKeywords: [String],
+        locationCodes: [String],
+        maxPages: Int,
+        trackingData: [String: Date],
+        currentDate: Date
+    ) async throws -> [Job] {
         var allJobs: [Job] = []
         var currentOffset = 0
         var pageNumber = 1
-        let trackingData = await trackingService.loadTrackingData(for: "tiktok")
-        let currentDate = Date()
         
         while allJobs.count < 5000 && pageNumber <= maxPages {
             do {
@@ -85,14 +124,9 @@ actor TikTokJobFetcher: JobFetcherProtocol {
             }
         }
         
-        guard !allJobs.isEmpty else {
-            throw FetchError.noJobs
-        }
-
-        await trackingService.saveTrackingData(allJobs, for: "tiktok", currentDate: currentDate, retentionDays: 60)
         return allJobs
     }
-    
+
     private func fetchJobsPage(titleKeywords: [String], locationCodes: [String], offset: Int) async throws -> [TikTokJob] {
         var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"

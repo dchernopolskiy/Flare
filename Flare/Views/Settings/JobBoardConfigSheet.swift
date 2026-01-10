@@ -146,30 +146,31 @@ struct BoardConfigRow: View {
                         }
                         .foregroundColor(.secondary)
                     }
-                    
+
                     if let testResult = monitor.testResults[config.id] {
+                        let isSuccess = testResult.hasPrefix("Found")
+                        let isLoading = testResult == "Testing..."
                         HStack(spacing: 4) {
-                            if testResult == "Testing..." {
+                            if isLoading {
                                 ProgressView()
                                     .scaleEffect(0.7)
-                            } else if !testResult.hasPrefix("✅") {
-                                // Only show icon for failures
+                            } else if !isSuccess {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundColor(.red)
                             }
 
-                            Text(testResult.replacingOccurrences(of: "✅ ", with: "").replacingOccurrences(of: "❌ ", with: ""))
+                            Text(testResult)
                                 .font(.caption)
                                 .fontWeight(.medium)
-                                .foregroundColor(testResult.hasPrefix("✅") ? .secondary : testResult == "Testing..." ? .blue : .red)
+                                .foregroundColor(isSuccess ? .secondary : isLoading ? .blue : .red)
                                 .lineLimit(1)
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(testResult.hasPrefix("✅") ? Color.clear :
-                                      testResult == "Testing..." ? Color.blue.opacity(0.1) :
+                                .fill(isSuccess ? Color.clear :
+                                      isLoading ? Color.blue.opacity(0.1) :
                                       Color.red.opacity(0.1))
                         )
                     }

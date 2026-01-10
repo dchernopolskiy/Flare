@@ -14,6 +14,43 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let trackingData = await trackingService.loadTrackingData(for: "google")
         let currentDate = Date()
+
+        // Fetch jobs with regular location filter
+        var allJobs = try await fetchJobsWithLocation(
+            url: url,
+            titleFilter: titleFilter,
+            locationFilter: locationFilter,
+            trackingData: trackingData,
+            currentDate: currentDate
+        )
+
+        // Also fetch remote jobs unless user already specified remote
+        if !locationFilter.lowercased().contains("remote") {
+            let remoteJobs = try await fetchJobsWithLocation(
+                url: url,
+                titleFilter: titleFilter,
+                locationFilter: "Remote",
+                trackingData: trackingData,
+                currentDate: currentDate
+            )
+
+            let existingIds = Set(allJobs.map { $0.id })
+            let newRemoteJobs = remoteJobs.filter { !existingIds.contains($0.id) }
+            allJobs.append(contentsOf: newRemoteJobs)
+        }
+
+        await trackingService.saveTrackingData(allJobs, for: "google", currentDate: currentDate, retentionDays: 30)
+        print("[Google] Total fetched: \(allJobs.count) jobs")
+        return allJobs
+    }
+
+    private func fetchJobsWithLocation(
+        url: URL,
+        titleFilter: String,
+        locationFilter: String,
+        trackingData: [String: Date],
+        currentDate: Date
+    ) async throws -> [Job] {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents(string: baseURL)!
 
         if !titleFilter.isEmpty {
@@ -65,9 +102,7 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             jobs = parseHTML(html, baseURL: url, trackingData: trackingData, currentDate: currentDate)
         }
 
-        await trackingService.saveTrackingData(jobs, for: "google", currentDate: currentDate, retentionDays: 30)
-
-        print("[Google] Fetched \(jobs.count) jobs")
+        print("[Google] Fetched \(jobs.count) jobs from \(locationFilter.isEmpty ? "default" : locationFilter)")
         return jobs
     }
 

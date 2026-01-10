@@ -37,13 +37,15 @@ class JobBoardMonitor: ObservableObject {
         do {
             boardConfigs = try await persistenceService.loadBoardConfigs()
         } catch {
+            print("[JobBoardMonitor] Failed to load configs: \(error)")
         }
     }
-    
+
     func saveConfigs() async {
         do {
             try await persistenceService.saveBoardConfigs(boardConfigs)
         } catch {
+            print("[JobBoardMonitor] Failed to save configs: \(error)")
         }
     }
     
@@ -103,22 +105,18 @@ class JobBoardMonitor: ObservableObject {
     
     func testSingleBoard(_ config: JobBoardConfig) async {
         testResults[config.id] = "Testing..."
-        
+
         do {
             let jobs = try await fetchJobsFromBoard(config, titleFilter: "", locationFilter: "")
-            let message = "✅ Found \(jobs.count) jobs"
-            testResults[config.id] = message
-            
+            testResults[config.id] = "Found \(jobs.count) jobs"
+
             var updatedConfig = config
             updatedConfig.lastFetched = Date()
             updateBoardConfig(updatedConfig)
-            
-            
         } catch {
-            let message = "❌ Error: \(error.localizedDescription)"
-            testResults[config.id] = message
+            testResults[config.id] = "Error: \(error.localizedDescription)"
         }
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             self.testResults.removeValue(forKey: config.id)
         }
@@ -127,32 +125,30 @@ class JobBoardMonitor: ObservableObject {
     func fetchAllBoardJobs(titleFilter: String = "", locationFilter: String = "") async -> [Job] {
         isMonitoring = true
         lastError = nil
-        var allJobs: [Job] = []
-        var errorMessages: [String] = []
-        
+        var allJobs = [Job]()
+        var errorMessages = [String]()
+
         for config in boardConfigs where config.isEnabled && config.isSupported {
             do {
                 let jobs = try await fetchJobsFromBoard(config, titleFilter: titleFilter, locationFilter: locationFilter)
                 allJobs.append(contentsOf: jobs)
-                
+
                 var updatedConfig = config
                 updatedConfig.lastFetched = Date()
                 updateBoardConfig(updatedConfig)
-                
             } catch {
                 let errorMsg = "\(config.displayName): \(error.localizedDescription)"
                 errorMessages.append(errorMsg)
-                print("🌐 [JobBoard] ❌ \(errorMsg)")
+                print("[JobBoard] \(errorMsg)")
             }
 
             try? await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
-        
-        // Set combined error message if any boards failed
+
         if !errorMessages.isEmpty {
-            lastError = errorMessages.joined(separator: " • ")
+            lastError = errorMessages.joined(separator: " | ")
         }
-        
+
         isMonitoring = false
         return allJobs
     }
@@ -225,8 +221,9 @@ class JobBoardMonitor: ObservableObject {
            let detectedATSType = detectedATSType,
            let atsURL = URL(string: detectedATSURL) {
             print("[JobBoard] Using cached ATS: \(detectedATSType) at \(detectedATSURL)")
-            parsingStatus[config.id] = "⚡ Fetching from \(detectedATSType.capitalized)..."
-            var jobs: [Job] = []
+            parsingStatus[config.id] = "Fetching from \(detectedATSType.capitalized)..."
+
+            let jobs: [Job]
             switch detectedATSType.lowercased() {
             case "workday":
                 jobs = try await workdayFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
@@ -237,30 +234,27 @@ class JobBoardMonitor: ObservableObject {
             case "ashby":
                 jobs = try await ashbyFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
             default:
-                break  // Fall through to normal detection
+                jobs = []
             }
-            // Update status after fetch completes
-            if !jobs.isEmpty {
-                parsingStatus[config.id] = "✅ Found \(jobs.count) jobs"
 
-                // Persist to config if we found it in runtime cache but not in config
+            if !jobs.isEmpty {
+                parsingStatus[config.id] = "Found \(jobs.count) jobs"
+
                 if needsPersist {
                     var updatedConfig = config
                     updatedConfig.detectedATSURL = detectedATSURL
                     updatedConfig.detectedATSType = detectedATSType
                     updateBoardConfig(updatedConfig)
-                    print("[JobBoard] Persisted detected ATS to config: \(detectedATSType) at \(detectedATSURL)")
                 }
 
-                // Clear status after a delay
                 let configId = config.id
                 Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)  // 3 seconds
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
                     self.parsingStatus.removeValue(forKey: configId)
                 }
                 return jobs
             } else {
-                parsingStatus[config.id] = "❌ No jobs found"
+                parsingStatus[config.id] = "No jobs found"
             }
         }
 

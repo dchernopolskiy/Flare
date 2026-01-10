@@ -12,6 +12,31 @@ import Combine
 import UserNotifications
 import AppKit
 
+// MARK: - Job Filtering
+extension Array where Element == Job {
+    func filtered(titleFilter: String = "", locationFilter: String = "") -> [Job] {
+        var result = self
+
+        if !titleFilter.isEmpty {
+            let keywords = titleFilter.lowercased().components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            result = result.filter { job in
+                let title = job.title.lowercased()
+                return keywords.contains { title.contains($0) }
+            }
+        }
+
+        if !locationFilter.isEmpty {
+            let keywords = locationFilter.lowercased().components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            result = result.filter { job in
+                let location = job.location.lowercased()
+                return keywords.contains { location.contains($0) }
+            }
+        }
+
+        return result
+    }
+}
+
 struct Job: Identifiable, Codable, Equatable {
     let id: String
     let title: String
@@ -83,29 +108,7 @@ struct Job: Identifiable, Codable, Equatable {
     }
     
     var applyButtonText: String {
-        switch source {
-        case .microsoft:
-            return "Apply on Microsoft Careers"
-        case .apple:
-            return "Apply on Apple Careers"
-        case .tiktok:
-            return "Apply on Life at TikTok"
-        case .greenhouse, .workable, .jobvite, .lever, .bamboohr,
-             .smartrecruiters, .ashby, .jazzhr, .recruitee, .breezyhr, .workday:
-            return "Apply on Company Website"
-        case .snap:
-            return "Apply on Snap Careers"
-        case .meta:
-            return "Apply on Meta Careers"
-        case .amd:
-            return "Apply on AMD Careers"
-        case .google:
-            return "Apply on Google Careers"
-        case .amazon:
-            return "Apply on Amazon Jobs"
-        case .unknown:
-            return "Apply on the Company Website"
-        }
+        source.applyButtonText
     }
 }
 
@@ -181,7 +184,32 @@ enum JobSource: String, Codable, CaseIterable {
         case .unknown: return .orange
         }
     }
-    
+
+    private static let applyButtonLabels: [JobSource: String] = [
+        .microsoft: "Apply on Microsoft Careers",
+        .apple: "Apply on Apple Careers",
+        .tiktok: "Apply on Life at TikTok",
+        .snap: "Apply on Snap Careers",
+        .meta: "Apply on Meta Careers",
+        .amd: "Apply on AMD Careers",
+        .google: "Apply on Google Careers",
+        .amazon: "Apply on Amazon Jobs"
+    ]
+
+    var applyButtonText: String {
+        Self.applyButtonLabels[self] ?? "Apply on Company Website"
+    }
+
+    var isSupported: Bool {
+        switch self {
+        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse,
+             .ashby, .lever, .snap, .amd, .meta, .workday, .unknown:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func detectFromURL(_ urlString: String) -> JobSource? {
         let lowercased = urlString.lowercased()
 
@@ -413,13 +441,3 @@ class QualificationExtractor {
     }
 }
 
-extension JobSource {
-    var isSupported: Bool {
-        switch self {
-        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse, .ashby, .lever, .snap, .amd, .meta, .workday, .unknown:
-            return true
-        default:
-            return false
-        }
-    }
-}
