@@ -22,6 +22,43 @@ struct DiscoveredAPISchema: Codable {
     let schemaDiscovered: Bool  // Whether we successfully discovered a schema
     let lastAttempt: Date  // Last time we tried to parse this domain
     var lastFetchedAt: Date?  // Last time we successfully fetched jobs
+    var htmlExtractionWorks: Bool  // Whether direct HTML extraction successfully found jobs
+
+    init(domain: String, endpoint: String, method: String, requestBody: String?, requestHeaders: [String: String]?, responseStructure: JobResponseStructure, paginationInfo: PaginationInfo?, sortInfo: SortInfo?, discoveredAt: Date, llmAttempted: Bool, schemaDiscovered: Bool, lastAttempt: Date, lastFetchedAt: Date?, htmlExtractionWorks: Bool = false) {
+        self.domain = domain
+        self.endpoint = endpoint
+        self.method = method
+        self.requestBody = requestBody
+        self.requestHeaders = requestHeaders
+        self.responseStructure = responseStructure
+        self.paginationInfo = paginationInfo
+        self.sortInfo = sortInfo
+        self.discoveredAt = discoveredAt
+        self.llmAttempted = llmAttempted
+        self.schemaDiscovered = schemaDiscovered
+        self.lastAttempt = lastAttempt
+        self.lastFetchedAt = lastFetchedAt
+        self.htmlExtractionWorks = htmlExtractionWorks
+    }
+
+    // For decoding existing cache entries without htmlExtractionWorks
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        domain = try container.decode(String.self, forKey: .domain)
+        endpoint = try container.decode(String.self, forKey: .endpoint)
+        method = try container.decode(String.self, forKey: .method)
+        requestBody = try container.decodeIfPresent(String.self, forKey: .requestBody)
+        requestHeaders = try container.decodeIfPresent([String: String].self, forKey: .requestHeaders)
+        responseStructure = try container.decode(JobResponseStructure.self, forKey: .responseStructure)
+        paginationInfo = try container.decodeIfPresent(PaginationInfo.self, forKey: .paginationInfo)
+        sortInfo = try container.decodeIfPresent(SortInfo.self, forKey: .sortInfo)
+        discoveredAt = try container.decode(Date.self, forKey: .discoveredAt)
+        llmAttempted = try container.decode(Bool.self, forKey: .llmAttempted)
+        schemaDiscovered = try container.decode(Bool.self, forKey: .schemaDiscovered)
+        lastAttempt = try container.decode(Date.self, forKey: .lastAttempt)
+        lastFetchedAt = try container.decodeIfPresent(Date.self, forKey: .lastFetchedAt)
+        htmlExtractionWorks = try container.decodeIfPresent(Bool.self, forKey: .htmlExtractionWorks) ?? false
+    }
 }
 
 /// Pagination information
@@ -135,6 +172,87 @@ actor APISchemaCache {
             cache[domain] = schema
             persistCache()
         }
+    }
+
+    /// Mark that HTML extraction works for this domain
+    func markHTMLExtractionWorks(for domain: String) {
+        if var schema = cache[domain] {
+            schema.htmlExtractionWorks = true
+            schema.lastFetchedAt = Date()
+            cache[domain] = schema
+        } else {
+            // Create a minimal schema entry just to mark HTML extraction works
+            let schema = DiscoveredAPISchema(
+                domain: domain,
+                endpoint: "",
+                method: "GET",
+                requestBody: nil,
+                requestHeaders: nil,
+                responseStructure: JobResponseStructure(
+                    jobsArrayPath: "",
+                    titleField: "",
+                    locationField: nil,
+                    urlField: nil,
+                    urlTemplate: nil,
+                    paginationParam: nil,
+                    pageSizeParam: nil
+                ),
+                paginationInfo: nil,
+                sortInfo: nil,
+                discoveredAt: Date(),
+                llmAttempted: true,
+                schemaDiscovered: false,
+                lastAttempt: Date(),
+                lastFetchedAt: Date(),
+                htmlExtractionWorks: true
+            )
+            cache[domain] = schema
+        }
+        persistCache()
+        print("[APISchemaCache] Marked HTML extraction works for \(domain)")
+    }
+
+    /// Check if HTML extraction works for this domain
+    func htmlExtractionWorks(for domain: String) -> Bool {
+        return cache[domain]?.htmlExtractionWorks ?? false
+    }
+
+    /// Mark that simple API extraction works for this domain (when LLM schema discovery failed but simple extraction succeeded)
+    func markSimpleAPIExtractionWorks(for domain: String, apiEndpoint: String) {
+        if var schema = cache[domain] {
+            schema.htmlExtractionWorks = true  // Reuse this flag since it triggers fast path
+            schema.lastFetchedAt = Date()
+            cache[domain] = schema
+        } else {
+            // Create a minimal schema entry to mark simple extraction works
+            let schema = DiscoveredAPISchema(
+                domain: domain,
+                endpoint: apiEndpoint,
+                method: "GET",
+                requestBody: nil,
+                requestHeaders: nil,
+                responseStructure: JobResponseStructure(
+                    jobsArrayPath: "",
+                    titleField: "",
+                    locationField: nil,
+                    urlField: nil,
+                    urlTemplate: nil,
+                    paginationParam: nil,
+                    pageSizeParam: nil
+                ),
+                paginationInfo: nil,
+                sortInfo: nil,
+                discoveredAt: Date(),
+                llmAttempted: true,
+                schemaDiscovered: false,
+                lastAttempt: Date(),
+                lastFetchedAt: Date(),
+                htmlExtractionWorks: true  // Reuse this flag to trigger fast path
+            )
+            cache[domain] = schema
+        }
+        persistCache()
+        print("[APISchemaCache] Marked simple API extraction works for \(domain) at \(apiEndpoint)")
     }
 
     /// Remove cached schema (for testing/debugging)

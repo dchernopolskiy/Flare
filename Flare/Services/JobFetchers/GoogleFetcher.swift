@@ -158,8 +158,18 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             // Structure: [jobId, title, url, [responsibilities], [qualifications], company, locale, [locations], ...]
             guard let jobId = jobArray[0] as? String,
                   let title = jobArray[1] as? String,
-                  let url = jobArray[2] as? String else {
+                  let rawURL = jobArray[2] as? String else {
                 continue
+            }
+
+            // Build full URL from relative path
+            let url: String
+            if rawURL.hasPrefix("http") {
+                url = rawURL
+            } else if rawURL.hasPrefix("/") {
+                url = "https://www.google.com\(rawURL)"
+            } else {
+                url = "https://www.google.com/about/careers/applications/\(rawURL)"
             }
 
             // Extract location from the locations array (index 7)

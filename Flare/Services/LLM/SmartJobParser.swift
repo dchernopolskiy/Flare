@@ -336,10 +336,18 @@ actor SmartJobParser {
         guard let domain = url.host else { return nil }
 
         var skipLLMAnalysis = false
+        var useDirectHTMLExtraction = false
 
         if let cachedSchema = await schemaCache.getSchema(for: domain) {
-            print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered)")
-            if cachedSchema.llmAttempted && !cachedSchema.schemaDiscovered {
+            print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered), htmlExtractionWorks: \(cachedSchema.htmlExtractionWorks)")
+
+            // Fast path: if HTML extraction previously worked, skip API detection and go straight to it
+            if cachedSchema.htmlExtractionWorks {
+                print("[SmartParser] HTML extraction previously worked for \(domain) - using fast path")
+                await updateStatus("⚡ Using cached HTML extraction for \(domain)", callback: statusCallback)
+                useDirectHTMLExtraction = true
+                skipLLMAnalysis = true
+            } else if cachedSchema.llmAttempted && !cachedSchema.schemaDiscovered {
                 let daysSinceLastAttempt = Date().timeIntervalSince(cachedSchema.lastAttempt) / (24 * 60 * 60)
 
                 if daysSinceLastAttempt < 7 {
@@ -364,6 +372,53 @@ actor SmartJobParser {
             }
         } else {
             print("[SmartParser] Cache miss for \(domain) - no cached schema found")
+        }
+
+        // Fast path: if HTML/API extraction is cached as working, render and extract directly
+        if useDirectHTMLExtraction {
+            print("[SmartParser] Fast path: WebKit render + extraction for \(domain)")
+            await updateStatus("🌐 Rendering page...", callback: statusCallback)
+
+            let renderer = await WebKitRenderer()
+            let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 8.0)
+
+            print("[SmartParser] WebKit rendered HTML length: \(result.html.count) chars")
+            print("[SmartParser] Fast path detected \(result.detectedAPICalls.count) API calls")
+
+            // First try simple API extraction on any intercepted API calls (for sites like Spotify)
+            let jobRelatedAPICalls = result.detectedAPICalls.filter { apiCall in
+                JobExtractionPatterns.isJobRelatedURL(apiCall.url) && !JobExtractionPatterns.isTrackingURL(apiCall.url)
+            }
+            let apiCallsToTry = jobRelatedAPICalls.isEmpty ? result.detectedAPICalls : jobRelatedAPICalls
+
+            for apiCall in apiCallsToTry {
+                if let jobs = await trySimpleAPIExtraction(
+                    apiCall: apiCall,
+                    baseURL: url,
+                    titleFilter: titleFilter,
+                    locationFilter: locationFilter,
+                    statusCallback: statusCallback
+                ), !jobs.isEmpty {
+                    print("[SmartParser] Fast path: extracted \(jobs.count) jobs via simple API extraction")
+                    await updateStatus("✅ Found \(jobs.count) jobs", callback: statusCallback)
+                    await schemaCache.updateLastFetched(for: domain)
+                    return jobs
+                }
+            }
+
+            // Then try HTML extraction
+            if result.html.count > 1000 {
+                if let jobs = extractJobsFromHTML(result.html, baseURL: url, titleFilter: titleFilter, locationFilter: locationFilter), !jobs.isEmpty {
+                    print("[SmartParser] Fast path extracted \(jobs.count) jobs from HTML")
+                    await updateStatus("✅ Found \(jobs.count) jobs", callback: statusCallback)
+                    await schemaCache.updateLastFetched(for: domain)
+                    return jobs
+                }
+            }
+
+            // Fast path failed, fall through to full analysis
+            print("[SmartParser] Fast path extraction failed, trying full analysis")
+            await updateStatus("🔄 Fast path failed, analyzing page...", callback: statusCallback)
         }
 
         await updateStatus("🌐 Checking site structure...", callback: statusCallback)
@@ -460,6 +515,8 @@ actor SmartJobParser {
                 ), !jobs.isEmpty {
                     print("[SmartParser] Successfully fetched \(jobs.count) jobs via simple extraction fallback!")
                     await updateStatus("✅ Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
+                    // Cache that simple extraction works for this domain so we skip LLM next time
+                    await schemaCache.markSimpleAPIExtractionWorks(for: domain, apiEndpoint: apiCall.url)
                     foundJobs = jobs
                     break
                 }
@@ -528,6 +585,8 @@ actor SmartJobParser {
             if let jobs = extractJobsFromHTML(result.html, baseURL: url, titleFilter: titleFilter, locationFilter: locationFilter), !jobs.isEmpty {
                 print("[SmartParser] Extracted \(jobs.count) jobs from rendered HTML")
                 await updateStatus("✅ Found \(jobs.count) jobs from rendered page", callback: statusCallback)
+                // Cache that HTML extraction works for this domain
+                await schemaCache.markHTMLExtractionWorks(for: domain)
                 await llmParser.unloadModel()
                 return jobs
             }

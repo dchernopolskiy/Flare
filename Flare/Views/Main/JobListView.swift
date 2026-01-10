@@ -90,8 +90,8 @@ struct JobListView: View {
     private func setupFilterDebouncing() {
         filterCancellable = filterPublisher
             .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.updateFilteredJobs()
+            .sink { _ in
+                updateFilteredJobs()
             }
     }
 

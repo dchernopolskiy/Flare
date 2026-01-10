@@ -86,7 +86,8 @@ class JobManager: ObservableObject {
 
         var filtered = allJobsSorted
 
-        // 48h date filter
+        // 48h date filter - show jobs posted within last 48 hours
+        // No lower bound check needed - server clocks may be slightly ahead
         filtered = filtered.filter { job in
             if job.isBumpedRecently {
                 return true
@@ -94,10 +95,10 @@ class JobManager: ObservableObject {
 
             if let postingDate = job.postingDate {
                 let diff = Date().timeIntervalSince(postingDate)
-                return diff <= 172800 && diff >= 0 // Within 48h and not future-dated
+                return diff <= 172800
             } else {
                 let diff = Date().timeIntervalSince(job.firstSeenDate)
-                return diff <= 172800 && diff >= 0
+                return diff <= 172800
             }
         }
 
@@ -839,16 +840,31 @@ class JobManager: ObservableObject {
         fetchStatistics.lastFetchTime = Date()
         
         if !newJobs.isEmpty {
+            // Group new jobs by source/company to detect first-time fetches
+            let jobsBySourceCompany = Dictionary(grouping: newJobs) { job in
+                "\(job.source.rawValue)-\(job.companyName ?? "unknown")"
+            }
+
             let recentNewJobs = newJobs.filter { job in
                 // Only notify about jobs with valid posting dates within 2 hours
                 // This prevents mass notifications when first adding a job board
                 if let postingDate = job.postingDate {
                     return Date().timeIntervalSince(postingDate) <= 7200 // 2 hours
                 } else {
-                    // For jobs without posting dates, only notify if we've seen them before
-                    // (i.e., firstSeenDate is not from this fetch cycle)
+                    // For jobs without posting dates (custom sources), check if this looks like
+                    // a first-time fetch for this source. If ALL jobs from this source/company
+                    // are new, it's likely a first-time fetch - don't send mass notifications.
+                    let sourceKey = "\(job.source.rawValue)-\(job.companyName ?? "unknown")"
+                    let sourceJobCount = jobsBySourceCompany[sourceKey]?.count ?? 0
+
+                    // If more than 10 jobs from the same source are all new, skip notification
+                    // This prevents mass notifications when adding a new job board
+                    if sourceJobCount > 10 {
+                        return false
+                    }
+
+                    // For smaller batches, use the existing time-based check
                     let timeSinceFirstSeen = Date().timeIntervalSince(job.firstSeenDate)
-                    // If firstSeenDate is within the last minute, it's from this fetch - don't notify
                     return timeSinceFirstSeen > 60 && timeSinceFirstSeen <= 7200
                 }
             }

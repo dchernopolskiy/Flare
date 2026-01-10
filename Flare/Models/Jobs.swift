@@ -232,9 +232,61 @@ enum JobSource: String, Codable, CaseIterable {
 
 // MARK: - Helper Classes
 class HTMLCleaner {
+    /// Strip irrelevant HTML elements before sending to LLM.
+    /// Removes: head, script, style, nav, header, footer, aside, iframe, noscript, svg, form
+    /// Also strips data-*, aria-*, class, style, role attributes to reduce token count.
+    static func stripForLLM(_ html: String) -> String {
+        var result = html
+
+        // Remove entire elements that are not relevant for job extraction
+        let elementsToRemove = [
+            "head", "script", "style", "nav", "header", "footer",
+            "aside", "iframe", "noscript", "svg", "form", "button",
+            "input", "select", "textarea", "canvas", "video", "audio"
+        ]
+
+        for element in elementsToRemove {
+            // Match opening tag through closing tag (non-greedy, case-insensitive)
+            let pattern = "<\(element)[^>]*>[\\s\\S]*?</\(element)>"
+            result = result.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+            // Also remove self-closing tags
+            let selfClosingPattern = "<\(element)[^>]*/>"
+            result = result.replacingOccurrences(of: selfClosingPattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+            // Remove orphaned opening tags (e.g., <script src="...">)
+            let openingOnlyPattern = "<\(element)[^>]*>"
+            result = result.replacingOccurrences(of: openingOnlyPattern, with: "", options: [.regularExpression, .caseInsensitive])
+        }
+
+        // Strip irrelevant attributes to reduce token count
+        let attributePatterns = [
+            #"\s+class="[^"]*""#,
+            #"\s+class='[^']*'"#,
+            #"\s+style="[^"]*""#,
+            #"\s+style='[^']*'"#,
+            #"\s+data-[a-z0-9-]+="[^"]*""#,
+            #"\s+data-[a-z0-9-]+'[^']*'"#,
+            #"\s+aria-[a-z]+="[^"]*""#,
+            #"\s+role="[^"]*""#,
+            #"\s+onclick="[^"]*""#,
+            #"\s+onload="[^"]*""#,
+            #"\s+onerror="[^"]*""#
+        ]
+
+        for pattern in attributePatterns {
+            result = result.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+        }
+
+        // Collapse multiple whitespace/newlines
+        result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func cleanHTML(_ html: String) -> String {
         let htmlDecoded = decodeHTMLEntities(html)
-        
+
         var text = htmlDecoded
             .replacingOccurrences(of: "<br>", with: "\n")
             .replacingOccurrences(of: "<br/>", with: "\n")
@@ -249,15 +301,15 @@ class HTMLCleaner {
             .replacingOccurrences(of: "</ul>", with: "\n")
             .replacingOccurrences(of: "<ol>", with: "\n")
             .replacingOccurrences(of: "</ol>", with: "\n")
-        
+
         text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        
+
         let lines = text.components(separatedBy: .newlines)
         let cleanedLines = lines.map { $0.trimmingCharacters(in: .whitespaces) }
-        
+
         var result: [String] = []
         var previousWasEmpty = false
-        
+
         for line in cleanedLines {
             if line.isEmpty {
                 if !previousWasEmpty && !result.isEmpty {
@@ -269,13 +321,13 @@ class HTMLCleaner {
                 previousWasEmpty = false
             }
         }
-        
+
         return result.joined(separator: "\n")
     }
-    
+
     private static func decodeHTMLEntities(_ html: String) -> String {
         guard let data = html.data(using: .utf8) else { return html }
-        
+
         do {
             let attributedString = try NSAttributedString(
                 data: data,
@@ -290,7 +342,7 @@ class HTMLCleaner {
             return manualDecodeHTMLEntities(html)
         }
     }
-    
+
     private static func manualDecodeHTMLEntities(_ text: String) -> String {
         return text
             .replacingOccurrences(of: "&amp;", with: "&")
