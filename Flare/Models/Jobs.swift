@@ -15,8 +15,6 @@ import os.log
 
 // MARK: - Filter String Parsing
 extension String {
-    /// Parse a comma-separated filter string into an array of trimmed, non-empty keywords.
-    /// Used by job fetchers to parse title/location filters.
     func parseAsFilterKeywords() -> [String] {
         guard !isEmpty else { return [] }
         return split(separator: ",")
@@ -26,8 +24,6 @@ extension String {
 }
 
 extension Array where Element == String {
-    /// Appends "remote" keyword if no remote-related keyword is already present.
-    /// Used by location filters to automatically include remote positions.
     func includingRemote() -> [String] {
         let remoteKeywords = ["remote", "work from home", "distributed", "anywhere"]
         let hasRemoteKeyword = contains { keyword in
@@ -63,17 +59,12 @@ extension Array where Element == Job {
         return result
     }
 
-    /// Appends jobs from another array, excluding duplicates by ID.
-    /// Returns a new array with this array's jobs plus unique jobs from the other array.
     func merging(_ other: [Job]) -> [Job] {
         let existingIds = Set(map { $0.id })
         let newJobs = other.filter { !existingIds.contains($0.id) }
         return self + newJobs
     }
 
-    /// Applies title and location keyword filters to jobs.
-    /// Title filter matches against title, department, and category.
-    /// Location filter matches against location field.
     func applying(titleKeywords: [String], locationKeywords: [String]) -> [Job] {
         var result = self
 
@@ -109,7 +100,6 @@ extension Array where Element == Job {
 enum WorkFlexibility {
     private static let keywords = ["remote", "hybrid", "flexible", "work from home", "onsite", "on-site", "in-office"]
 
-    /// Extracts work flexibility type from job description text.
     static func extract(from text: String) -> String? {
         let lowercased = text.lowercased()
         for keyword in keywords {
@@ -365,13 +355,9 @@ enum JobSource: String, Codable, CaseIterable {
 
 // MARK: - Helper Classes
 class HTMLCleaner {
-    /// Strip irrelevant HTML elements before sending to LLM.
-    /// Removes: head, script, style, nav, header, footer, aside, iframe, noscript, svg, form
-    /// Also strips data-*, aria-*, class, style, role attributes to reduce token count.
     static func stripForLLM(_ html: String) -> String {
         var result = html
 
-        // Remove entire elements that are not relevant for job extraction
         let elementsToRemove = [
             "head", "script", "style", "nav", "header", "footer",
             "aside", "iframe", "noscript", "svg", "form", "button",
@@ -379,20 +365,16 @@ class HTMLCleaner {
         ]
 
         for element in elementsToRemove {
-            // Match opening tag through closing tag (non-greedy, case-insensitive)
             let pattern = "<\(element)[^>]*>[\\s\\S]*?</\(element)>"
             result = result.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
 
-            // Also remove self-closing tags
             let selfClosingPattern = "<\(element)[^>]*/>"
             result = result.replacingOccurrences(of: selfClosingPattern, with: "", options: [.regularExpression, .caseInsensitive])
 
-            // Remove orphaned opening tags (e.g., <script src="...">)
             let openingOnlyPattern = "<\(element)[^>]*>"
             result = result.replacingOccurrences(of: openingOnlyPattern, with: "", options: [.regularExpression, .caseInsensitive])
         }
 
-        // Strip irrelevant attributes to reduce token count
         let attributePatterns = [
             #"\s+class="[^"]*""#,
             #"\s+class='[^']*'"#,
@@ -411,7 +393,6 @@ class HTMLCleaner {
             result = result.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
         }
 
-        // Collapse multiple whitespace/newlines
         result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
 
         return result.trimmingCharacters(in: .whitespacesAndNewlines)

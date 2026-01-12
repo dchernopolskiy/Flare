@@ -17,14 +17,12 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
         let isLLMEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
 
-        // Try direct JSON/API extraction first
         let (html, extractedJobs) = try await extractFromJSON(url: url)
 
         if !extractedJobs.isEmpty {
             FetcherLog.info("Universal", "Found \(extractedJobs.count) jobs via JSON/API")
             let filtered = filterJobs(extractedJobs, titleFilter: titleFilter, locationFilter: locationFilter)
 
-            // If LLM enabled, compare results
             if isLLMEnabled {
                 let llmJobs = await tryLLMExtraction(html: html, url: url)
                 if llmJobs.count > filtered.count {
@@ -35,7 +33,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             return filtered
         }
 
-        // Try LLM if enabled
         if isLLMEnabled {
             if let llmAPIJobs = await tryLLMAPIDiscovery(html: html, url: url), !llmAPIJobs.isEmpty {
                 return filterJobs(llmAPIJobs, titleFilter: titleFilter, locationFilter: locationFilter)
@@ -47,7 +44,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             }
         }
 
-        // Fallback to HTML patterns
         let patternJobs = extractJobsFromHTMLPatterns(html: html, baseURL: url)
         if !patternJobs.isEmpty {
             FetcherLog.info("Universal", "HTML patterns found \(patternJobs.count) jobs")
@@ -63,28 +59,24 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
         var allJobs: [Job] = []
 
-        // 1. Try Schema.org/JSON-LD extraction
         let schemaJobs = extractFromSchemaOrg(html: html, baseURL: url)
         if !schemaJobs.isEmpty {
             FetcherLog.debug("Universal", "Schema.org found \(schemaJobs.count) jobs")
             allJobs.append(contentsOf: schemaJobs)
         }
 
-        // 2. Try __NEXT_DATA__ extraction (Next.js sites)
         let nextDataJobs = extractFromNextData(html: html, baseURL: url)
         if !nextDataJobs.isEmpty {
             FetcherLog.debug("Universal", "__NEXT_DATA__ found \(nextDataJobs.count) jobs")
             allJobs = allJobs.merging(nextDataJobs)
         }
 
-        // 3. Try other embedded JSON patterns
         let embeddedJobs = extractFromEmbeddedJSON(html: html, baseURL: url)
         if !embeddedJobs.isEmpty {
             FetcherLog.debug("Universal", "Embedded JSON found \(embeddedJobs.count) jobs")
             allJobs = allJobs.merging(embeddedJobs)
         }
 
-        // 4. Try API discovery
         let apiJobs = try await discoverAndFetchAPI(baseURL: url)
         if !apiJobs.isEmpty {
             FetcherLog.debug("Universal", "API discovery found \(apiJobs.count) jobs")
@@ -94,12 +86,9 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         return (html, allJobs)
     }
 
-    // MARK: - Schema.org/JSON-LD Extraction
-
     private func extractFromSchemaOrg(html: String, baseURL: URL) -> [Job] {
         var jobs: [Job] = []
 
-        // Pattern to find JSON-LD script tags
         let jsonLDPattern = #"<script[^>]*type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>"#
 
         guard let regex = try? NSRegularExpression(pattern: jsonLDPattern, options: .caseInsensitive) else {
@@ -115,7 +104,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             guard let data = jsonString.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) else { continue }
 
-            // Handle array of schemas or single schema
             let schemas: [[String: Any]]
             if let array = json as? [[String: Any]] {
                 schemas = array
@@ -126,7 +114,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             }
 
             for schema in schemas {
-                // Check for JobPosting type
                 guard let type = schema["@type"] as? String,
                       type == "JobPosting" else { continue }
 
@@ -188,8 +175,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         return jobs
     }
 
-    // MARK: - __NEXT_DATA__ Extraction (Next.js)
-
     private func extractFromNextData(html: String, baseURL: URL) -> [Job] {
         let pattern = #"<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>([\s\S]*?)</script>"#
 
@@ -205,22 +190,17 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             return []
         }
 
-        // Navigate to props.pageProps where job data usually lives
         guard let props = json["props"] as? [String: Any],
               let pageProps = props["pageProps"] as? [String: Any] else {
             return []
         }
 
-        // Try common keys for job arrays
         return extractJobsFromDict(pageProps, baseURL: baseURL, idPrefix: "next")
     }
-
-    // MARK: - Embedded JSON Extraction
 
     private func extractFromEmbeddedJSON(html: String, baseURL: URL) -> [Job] {
         var jobs: [Job] = []
 
-        // Patterns for common embedded JSON structures
         let patterns: [(pattern: String, name: String)] = [
             (#"window\.__PRELOAD_STATE__\s*=\s*(\{[\s\S]*?\})(?:;|\s*<)"#, "preload"),
             (#"window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\})(?:;|\s*<)"#, "initial"),
@@ -238,7 +218,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
             let jsonString = String(html[contentRange])
 
-            // Try to parse and extract jobs
             if let data = jsonString.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 let extracted = extractJobsFromDict(json, baseURL: baseURL, idPrefix: name)
@@ -252,8 +231,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
         return jobs
     }
-
-    // MARK: - API Discovery
 
     private func discoverAndFetchAPI(baseURL: URL) async throws -> [Job] {
         let apiPaths = [
@@ -313,13 +290,10 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         return []
     }
 
-    // MARK: - HTML Pattern Extraction
-
     private func extractJobsFromHTMLPatterns(html: String, baseURL: URL) -> [Job] {
         var jobs: [Job] = []
         var seenURLs = Set<String>()
 
-        // Pattern 1: Job links with common URL patterns
         let linkPatterns = [
             #"<a[^>]*href="([^"]*(?:/jobs?/|/careers?/|/positions?/|/openings?/)[^"]+)"[^>]*>([^<]{5,150})</a>"#,
             #"<a[^>]*href="([^"]*)"[^>]*class="[^"]*job[^"]*"[^>]*>([^<]{5,150})</a>"#,
@@ -337,7 +311,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 let jobUrl = String(html[urlRange])
                 let title = HTMLCleaner.cleanHTML(String(html[titleRange]))
 
-                // Skip navigation/pagination links
                 let skipPatterns = ["next", "prev", "page", "load more", "view all", "see all", "apply"]
                 if skipPatterns.contains(where: { title.lowercased().contains($0) }) { continue }
                 if title.count < 5 { continue }
@@ -372,8 +345,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         return jobs
     }
 
-    // MARK: - Helper Methods
-
     private func fetchHTML(from url: URL) async throws -> String {
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
@@ -390,7 +361,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
     }
 
     private func extractJobsFromDict(_ dict: [String: Any], baseURL: URL, idPrefix: String) -> [Job] {
-        // Try common keys for job arrays
         let jobArrayKeys = ["jobs", "results", "data", "items", "positions", "listings", "openings",
                            "jobPostings", "postings", "opportunities", "roles", "requisitions"]
 
@@ -399,7 +369,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 return parseJobArray(array, baseURL: baseURL, idPrefix: idPrefix)
             }
 
-            // Check nested structures
             if let nested = dict[key] as? [String: Any] {
                 for nestedKey in jobArrayKeys {
                     if let array = nested[nestedKey] as? [[String: Any]], !array.isEmpty {
@@ -409,7 +378,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             }
         }
 
-        // Check jobSearch structure (Radancy)
         if let jobSearch = dict["jobSearch"] as? [String: Any],
            let jobs = jobSearch["jobs"] as? [[String: Any]] {
             return parseJobArray(jobs, baseURL: baseURL, idPrefix: idPrefix)
@@ -419,13 +387,8 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
     }
 
     private func parseJobArray(_ array: [[String: Any]], baseURL: URL, idPrefix: String) -> [Job] {
-        let titleKeys = ["title", "text", "name", "position", "jobTitle", "role"]
-        let locationKeys = ["location", "locations", "office", "city", "cityState", "region", "locationName"]
-        let urlKeys = ["url", "link", "href", "applyURL", "applyUrl", "jobUrl", "originalURL", "absolute_url"]
-        let idKeys = ["id", "jobId", "requisitionID", "uniqueID", "slug", "req_id"]
-
         return array.compactMap { dict -> Job? in
-            // Extract title
+            let titleKeys = ["title", "text", "name", "position", "jobTitle", "role"]
             var title: String?
             for key in titleKeys {
                 if let t = dict[key] as? String, !t.isEmpty {
@@ -435,7 +398,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             }
             guard let jobTitle = title else { return nil }
 
-            // Extract location
+            let locationKeys = ["location", "locations", "office", "city", "cityState", "region", "locationName"]
             var location = "Not specified"
             for key in locationKeys {
                 if let loc = dict[key] as? String, !loc.isEmpty {
@@ -454,7 +417,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 }
             }
 
-            // Extract URL
+            let urlKeys = ["url", "link", "href", "applyURL", "applyUrl", "jobUrl", "originalURL", "absolute_url"]
             var jobURL = baseURL.absoluteString
             for key in urlKeys {
                 if let u = dict[key] as? String, !u.isEmpty {
@@ -469,7 +432,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 }
             }
 
-            // Extract ID for deduplication
+            let idKeys = ["id", "jobId", "requisitionID", "uniqueID", "slug", "req_id"]
             var jobId = "\(idPrefix)-\(UUID().uuidString)"
             for key in idKeys {
                 if let id = dict[key] {
@@ -523,8 +486,6 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         let locationKeywords = locationFilter.parseAsFilterKeywords()
         return jobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
     }
-
-    // MARK: - LLM Integration
 
     private func tryLLMExtraction(html: String, url: URL) async -> [Job] {
         do {

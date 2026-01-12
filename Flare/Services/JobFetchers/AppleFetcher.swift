@@ -52,7 +52,6 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             throw FetchError.decodingError(details: "Failed to decode CSRF token")
         }
 
-        // Cache the token for 10 minutes
         cachedCSRFToken = tokenString
         csrfTokenExpiry = Date().addingTimeInterval(600)
 
