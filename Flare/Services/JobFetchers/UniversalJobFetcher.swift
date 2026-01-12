@@ -77,13 +77,87 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             allJobs = allJobs.merging(embeddedJobs)
         }
 
-        let apiJobs = try await discoverAndFetchAPI(baseURL: url)
-        if !apiJobs.isEmpty {
-            FetcherLog.debug("Universal", "API discovery found \(apiJobs.count) jobs")
-            allJobs = allJobs.merging(apiJobs)
+        // Try inline API discovery from HTML before generic paths
+        let inlineAPIJobs = await discoverAPIFromHTML(html: html, baseURL: url)
+        if !inlineAPIJobs.isEmpty {
+            FetcherLog.debug("Universal", "Inline API found \(inlineAPIJobs.count) jobs")
+            allJobs = allJobs.merging(inlineAPIJobs)
+        }
+
+        // Only try generic API paths if we haven't found enough jobs
+        if allJobs.count < 5 {
+            let apiJobs = try await discoverAndFetchAPI(baseURL: url)
+            if !apiJobs.isEmpty {
+                FetcherLog.debug("Universal", "API discovery found \(apiJobs.count) jobs")
+                allJobs = allJobs.merging(apiJobs)
+            }
         }
 
         return (html, allJobs)
+    }
+
+    private func discoverAPIFromHTML(html: String, baseURL: URL) async -> [Job] {
+        // Look for API endpoints embedded in HTML/JavaScript
+        let patterns = [
+            #"[\"']([^\"']*(?:api|endpoint)[^\"']*/(?:jobs?|careers?|positions?)[^\"']*)[\"']"#,
+            #"fetch\([\"']([^\"']+)[\"']\)"#,
+            #"apiUrl[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']"#,
+            #"dataUrl[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']"#
+        ]
+
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+            let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+
+            for match in matches {
+                guard let urlRange = Range(match.range(at: 1), in: html) else { continue }
+                let urlString = String(html[urlRange])
+
+                let apiURL: URL
+                if urlString.hasPrefix("http") {
+                    guard let parsed = URL(string: urlString) else { continue }
+                    apiURL = parsed
+                } else if urlString.hasPrefix("/") {
+                    guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { continue }
+                    components.path = urlString.components(separatedBy: "?").first ?? urlString
+                    components.query = nil
+                    guard let parsed = components.url else { continue }
+                    apiURL = parsed
+                } else {
+                    continue
+                }
+
+                do {
+                    var request = URLRequest(url: apiURL)
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+                    request.timeoutInterval = 8
+
+                    let (data, response) = try await URLSession.shared.data(for: request)
+
+                    guard let httpResponse = response as? HTTPURLResponse,
+                          httpResponse.statusCode == 200 else { continue }
+
+                    guard let json = try? JSONSerialization.jsonObject(with: data) else { continue }
+
+                    var jobs: [Job] = []
+                    if let array = json as? [[String: Any]] {
+                        jobs = parseJobArray(array, baseURL: baseURL, idPrefix: "inline-api")
+                    } else if let dict = json as? [String: Any] {
+                        jobs = extractJobsFromDict(dict, baseURL: baseURL, idPrefix: "inline-api")
+                    }
+
+                    if !jobs.isEmpty {
+                        FetcherLog.info("Universal", "Found API in HTML: \(apiURL.absoluteString) -> \(jobs.count) jobs")
+                        return jobs
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        return []
     }
 
     private func extractFromSchemaOrg(html: String, baseURL: URL) -> [Job] {
@@ -233,6 +307,11 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
     }
 
     private func discoverAndFetchAPI(baseURL: URL) async throws -> [Job] {
+        // First try Radancy pattern if URL has pid parameter
+        if let radancyJobs = try? await tryRadancyAPI(baseURL: baseURL), !radancyJobs.isEmpty {
+            return radancyJobs
+        }
+
         let apiPaths = [
             "/api/jobs",
             "/api/careers",
@@ -243,7 +322,9 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             "/careers/api/jobs",
             "/jobs.json",
             "/careers.json",
-            "/api/get-jobs"
+            "/api/get-jobs",
+            "/api/jobSearch",
+            "/careers/search-jobs/results"
         ]
 
         for path in apiPaths {
@@ -288,6 +369,106 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
         }
 
         return []
+    }
+
+    private func tryRadancyAPI(baseURL: URL) async throws -> [Job] {
+        guard let components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems else { return [] }
+
+        // Look for pid parameter (Radancy pattern)
+        guard let pid = queryItems.first(where: { $0.name == "pid" })?.value else { return [] }
+
+        let domain = queryItems.first(where: { $0.name == "domain" })?.value
+
+        // Try Radancy API pattern: /api/apply/v2/jobs/{pid}/jobs
+        var apiComponents = components
+        apiComponents.path = "/api/apply/v2/jobs/\(pid)/jobs"
+        apiComponents.queryItems = domain != nil ? [URLQueryItem(name: "domain", value: domain)] : nil
+
+        guard let apiURL = apiComponents.url else { return [] }
+
+        FetcherLog.debug("Universal", "Trying Radancy API: \(apiURL.absoluteString)")
+
+        var request = URLRequest(url: apiURL)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue(baseURL.absoluteString, forHTTPHeaderField: "Referer")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            return []
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
+
+        var jobs: [Job] = []
+        if let dict = json as? [String: Any] {
+            // Radancy typically returns { positions: [...] } or { jobs: [...] }
+            if let positions = dict["positions"] as? [[String: Any]] {
+                jobs = parseRadancyPositions(positions, baseURL: baseURL)
+            } else if let jobsArray = dict["jobs"] as? [[String: Any]] {
+                jobs = parseRadancyPositions(jobsArray, baseURL: baseURL)
+            } else {
+                jobs = extractJobsFromDict(dict, baseURL: baseURL, idPrefix: "radancy-api")
+            }
+        } else if let array = json as? [[String: Any]] {
+            jobs = parseRadancyPositions(array, baseURL: baseURL)
+        }
+
+        if !jobs.isEmpty {
+            FetcherLog.info("Universal", "Radancy API found \(jobs.count) jobs")
+        }
+
+        return jobs
+    }
+
+    private func parseRadancyPositions(_ positions: [[String: Any]], baseURL: URL) -> [Job] {
+        return positions.compactMap { pos -> Job? in
+            guard let title = pos["title"] as? String ?? pos["name"] as? String else { return nil }
+
+            var location = "Not specified"
+            if let loc = pos["location"] as? String {
+                location = loc
+            } else if let loc = pos["location"] as? [String: Any] {
+                let city = loc["city"] as? String
+                let state = loc["state"] as? String
+                let country = loc["country"] as? String
+                location = [city, state, country].compactMap { $0 }.joined(separator: ", ")
+            } else if let locations = pos["locations"] as? [[String: Any]], let first = locations.first {
+                let city = first["city"] as? String
+                let state = first["state"] as? String
+                location = [city, state].compactMap { $0 }.joined(separator: ", ")
+            }
+
+            var jobURL = baseURL.absoluteString
+            if let url = pos["url"] as? String ?? pos["applyUrl"] as? String ?? pos["apply_url"] as? String {
+                jobURL = url.hasPrefix("http") ? url : "https://\(baseURL.host ?? "")\(url)"
+            } else if let id = pos["id"] ?? pos["jobId"] ?? pos["job_id"] {
+                var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+                components?.path = "/careers/job/\(id)"
+                jobURL = components?.url?.absoluteString ?? baseURL.absoluteString
+            }
+
+            return Job(
+                id: "radancy-\(pos["id"] ?? UUID().uuidString)",
+                title: title,
+                location: location,
+                postingDate: nil,
+                url: jobURL,
+                description: pos["description"] as? String ?? "",
+                workSiteFlexibility: WorkFlexibility.extract(from: "\(title) \(location)"),
+                source: .unknown,
+                companyName: pos["company"] as? String ?? extractCompanyName(from: baseURL),
+                department: pos["department"] as? String ?? pos["category"] as? String,
+                category: pos["category"] as? String,
+                firstSeenDate: Date(),
+                originalPostingDate: nil,
+                wasBumped: false
+            )
+        }
     }
 
     private func extractJobsFromHTMLPatterns(html: String, baseURL: URL) -> [Job] {

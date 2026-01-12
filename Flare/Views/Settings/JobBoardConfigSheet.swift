@@ -98,53 +98,60 @@ struct BoardConfigRow: View {
     let config: JobBoardConfig
     @Binding var testingBoardId: UUID?
     @ObservedObject private var monitor = JobBoardMonitor.shared
-    
+    @State private var isExpanded = false
+
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // Platform Icon
-            Image(systemName: config.source.icon)
-                .foregroundColor(config.source.color)
-                .font(.title3)
-                .frame(width: 30)
-            
-            // Board Info
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(config.displayName)
-                        .font(.headline)
-                    
-                    if !config.isSupported {
-                        Text("Coming Soon")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(4)
-                    }
-                }
-                
-                Text(config.url)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                
-                HStack(spacing: 8) {
-                    Text(config.source.rawValue)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(config.source.color.opacity(0.2))
-                        .cornerRadius(4)
-                    
-                    if let lastFetched = config.lastFetched {
-                        HStack(spacing: 4) {
-                            Image(systemName: "clock")
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: config.source.icon)
+                    .foregroundColor(config.source.color)
+                    .font(.title3)
+                    .frame(width: 30)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(config.displayName)
+                            .font(.headline)
+
+                        if !config.isSupported {
+                            Text("Coming Soon")
                                 .font(.caption2)
-                            Text("Last: \(lastFetched, style: .relative) ago")
-                                .font(.caption2)
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(4)
                         }
-                        .foregroundColor(.secondary)
+                    }
+
+                    HStack(spacing: 8) {
+                        if let method = config.parsingMethod {
+                            Label(method.rawValue, systemImage: method.icon)
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.blue.opacity(0.15))
+                                .cornerRadius(4)
+                        } else {
+                            Text(config.source.rawValue)
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(config.source.color.opacity(0.2))
+                                .cornerRadius(4)
+                        }
+
+                        if let jobCount = config.lastJobCount {
+                            Text("\(jobCount) jobs")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        if let lastFetched = config.lastFetched {
+                            Text("\(lastFetched, style: .relative) ago")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                     }
 
                     if let testResult = monitor.testResults[config.id] {
@@ -153,84 +160,125 @@ struct BoardConfigRow: View {
                         HStack(spacing: 4) {
                             if isLoading {
                                 ProgressView()
-                                    .scaleEffect(0.7)
+                                    .scaleEffect(0.6)
                             } else if !isSuccess {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundColor(.red)
+                                    .font(.caption2)
                             }
-
                             Text(testResult)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(isSuccess ? .secondary : isLoading ? .blue : .red)
-                                .lineLimit(1)
+                                .font(.caption2)
+                                .foregroundColor(isSuccess ? .green : isLoading ? .blue : .red)
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(isSuccess ? Color.clear :
-                                      isLoading ? Color.blue.opacity(0.1) :
-                                      Color.red.opacity(0.1))
-                        )
+                    }
+
+                    if let parsingStatus = monitor.parsingStatus[config.id] {
+                        Text(parsingStatus)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
                 }
 
-                // AI Parsing Status
-                if let parsingStatus = monitor.parsingStatus[config.id] {
-                    Text(parsingStatus)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                        .padding(.top, 2)
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Button(action: { isExpanded.toggle() }) {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Show details")
+
+                    Button(action: testBoard) {
+                        if testingBoardId == config.id {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!config.isSupported || testingBoardId != nil)
+                    .help("Test board")
+
+                    Toggle("", isOn: Binding(
+                        get: { config.isEnabled },
+                        set: { newValue in
+                            var updated = config
+                            updated.isEnabled = newValue
+                            monitor.updateBoardConfig(updated)
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(!config.isSupported)
+
+                    Button(action: deleteBoard) {
+                        Image(systemName: "trash")
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Delete")
                 }
             }
-            
-            Spacer()
-            
-            // Actions
-            HStack(spacing: 8) {
-                // Test Button
-                Button(action: {
-                    testBoard()
-                }) {
-                    if testingBoardId == config.id {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
+            .padding()
+
+            if isExpanded {
+                Divider()
+                    .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "link")
+                            .foregroundColor(.secondary)
+                            .frame(width: 16)
+                        Text("Original:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(config.url)
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                    }
+
+                    if let queryURL = config.detectedATSURL, queryURL != config.url {
+                        HStack(spacing: 6) {
+                            Image(systemName: config.parsingMethod?.icon ?? "antenna.radiowaves.left.and.right")
+                                .foregroundColor(.blue)
+                                .frame(width: 16)
+                            Text("Query:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(queryURL)
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                                .lineLimit(1)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "gearshape")
+                            .foregroundColor(.secondary)
+                            .frame(width: 16)
+                        Text("Method:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(config.parsingMethodDisplay)
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                        if let atsType = config.detectedATSType {
+                            Text("(\(atsType.capitalized))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
-                .buttonStyle(.borderless)
-                .disabled(!config.isSupported || testingBoardId != nil)
-                .help("Test board connection")
-                
-                // Enable/Disable Toggle
-                Toggle("", isOn: Binding(
-                    get: { config.isEnabled },
-                    set: { newValue in
-                        var updated = config
-                        updated.isEnabled = newValue
-                        monitor.updateBoardConfig(updated)
-                    }
-                ))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(!config.isSupported)
-                .help(config.isEnabled ? "Enabled" : "Disabled")
-                
-                // Delete Button
-                Button(action: {
-                    deleteBoard()
-                }) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red)
-                }
-                .buttonStyle(.borderless)
-                .help("Delete board")
+                .padding(.horizontal)
+                .padding(.bottom)
             }
         }
-        .padding()
         .background(config.isEnabled ? Color(NSColor.controlBackgroundColor) : Color.gray.opacity(0.1))
         .cornerRadius(8)
         .overlay(
@@ -238,7 +286,7 @@ struct BoardConfigRow: View {
                 .stroke(config.isEnabled ? Color.clear : Color.gray.opacity(0.3), lineWidth: 1)
         )
     }
-    
+
     private func testBoard() {
         testingBoardId = config.id
         Task {
@@ -248,7 +296,7 @@ struct BoardConfigRow: View {
             }
         }
     }
-    
+
     private func deleteBoard() {
         if let index = monitor.boardConfigs.firstIndex(where: { $0.id == config.id }) {
             monitor.removeBoardConfig(at: index)

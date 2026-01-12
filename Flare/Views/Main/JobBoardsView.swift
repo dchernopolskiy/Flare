@@ -176,239 +176,60 @@ struct ImportExportSection: View {
     }
 }
 
-// MARK: - Add Board Section (reused from JobBoardConfigSheet)
+// MARK: - Add Board Section
 
 struct AddBoardSection: View {
     @Binding var newBoardName: String
     @Binding var newBoardURL: String
     @Binding var testingBoardId: UUID?
-    @State private var isDetecting = false
-    @State private var detectionResult: ATSDetectorService.DetectionResult?
-    @State private var urlToUse: String = ""
+    @State private var detectionPreview: JobBoardMonitor.DetectionPreview?
     @ObservedObject private var monitor = JobBoardMonitor.shared
     @EnvironmentObject var jobManager: JobManager
-    
-    private var detectedSource: JobSource? {
-        JobSource.detectFromURL(urlToUse.isEmpty ? newBoardURL : urlToUse)
-    }
 
-    private var isDirectATSLink: Bool {
+    private var isValidURL: Bool {
         guard !newBoardURL.isEmpty else { return false }
-        // Only consider it a "direct" link if it's a known, supported ATS platform
-        // .unknown means we don't recognize it - needs detection
-        if let source = JobSource.detectFromURL(newBoardURL) {
-            return source != .unknown && source.isSupported
-        }
-        return false
+        return URL(string: newBoardURL) != nil
     }
 
-    /// Whether AI parsing is enabled in settings
-    private var aiParsingEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "enableAIParser")
-    }
-
-    /// Whether detection has been completed (either found ATS or confirmed custom site)
-    private var detectionCompleted: Bool {
-        detectionResult != nil
-    }
-
-    /// Whether the detected ATS (or custom site with AI) can be added
-    private var canAddBoard: Bool {
-        guard !newBoardURL.isEmpty else { return false }
-
-        // Direct ATS link - can add immediately
-        if isDirectATSLink {
-            return detectedSource?.isSupported ?? false
-        }
-
-        // Non-ATS URL - must run detection first
-        guard detectionCompleted else { return false }
-
-        // Detection found a supported ATS
-        if let result = detectionResult,
-           let source = result.source,
-           source.isSupported {
-            return true
-        }
-
-        // Detection found custom site - can add if AI parsing enabled
-        if detectionResult?.source == nil || detectionResult?.source == .unknown {
-            return aiParsingEnabled
-        }
-
-        return false
-    }
-
-    /// Whether the "Detect ATS" button should be shown
-    private var needsDetection: Bool {
-        guard !newBoardURL.isEmpty else { return false }
-
-        // Direct ATS link doesn't need detection
-        if isDirectATSLink {
-            return false
-        }
-
-        // Show detect button if we haven't detected yet
-        return !detectionCompleted
-    }
-
-    /// Whether this is a custom site (needs AI parsing)
-    private var isCustomSite: Bool {
-        guard detectionCompleted else { return false }
-        return detectionResult?.source == nil || detectionResult?.source == .unknown
-    }
-    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Add Job Board", systemImage: "plus.circle.fill")
                 .font(.headline)
-            
+
             TextField("Board Name (e.g., GitLab, Stripe)", text: $newBoardName)
                 .textFieldStyle(.roundedBorder)
-            
+
             TextField("Board URL (job listing page)", text: $newBoardURL)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: newBoardURL) { _, _ in
-                    detectionResult = nil
-                    urlToUse = ""
+                    detectionPreview = nil
                 }
-            
-            if let result = detectionResult {
-                DetectionResultView(result: result)
-            }
-            
-            // Status message for direct ATS links
-            if isDirectATSLink, let source = detectedSource {
-                HStack(spacing: 6) {
-                    Image(systemName: source.icon)
-                        .foregroundColor(source.color)
-                    Text("Direct \(source.rawValue) link - ready to add")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fontWeight(.medium)
-                    if !source.isSupported {
-                        Text("(Coming soon)")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(6)
-            }
 
-            // Status message for custom sites after detection
-            if isCustomSite {
-                HStack(spacing: 6) {
-                    Image(systemName: aiParsingEnabled ? "cpu" : "exclamationmark.triangle.fill")
-                        .foregroundColor(aiParsingEnabled ? .blue : .orange)
-                    if aiParsingEnabled {
-                        Text("Custom career site - will use AI parsing")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                            .fontWeight(.medium)
-                    } else {
-                        Text("Custom site detected - enable AI parsing in Settings to add")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                            .fontWeight(.medium)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background((aiParsingEnabled ? Color.blue : Color.orange).opacity(0.1))
-                .cornerRadius(6)
-            }
-
-            // Hint for non-ATS URLs
-            if !newBoardURL.isEmpty && !isDirectATSLink && !detectionCompleted {
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .foregroundColor(.secondary)
-                    Text("Click 'Detect ATS' to check if this site uses a known job board platform")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(6)
+            if monitor.detectionInProgress {
+                DetectionProgressView(status: monitor.detectionStatus)
             }
 
             Text("Supported: Greenhouse, Ashbyhq, Lever, Workday, and custom sites with AI parsing")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            // Action buttons
-            HStack(spacing: 12) {
-                // Detect ATS button - shown for non-ATS URLs that haven't been detected yet
-                if needsDetection {
-                    Button(action: detectATS) {
-                        HStack {
-                            if isDetecting {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                                Text("Detecting...")
-                            } else {
-                                Image(systemName: "magnifyingglass.circle.fill")
-                                Text("Detect ATS")
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(newBoardURL.isEmpty || isDetecting)
-                }
-
-                // Add & Test button - shown after detection or for direct ATS links
-                if !needsDetection || detectionCompleted {
-                    if needsDetection {
-                        // Secondary style when detect button is also shown
-                        Button(action: addBoard) {
-                            HStack {
-                                Image(systemName: "plus.circle.fill")
-                                if isCustomSite {
-                                    Text("Add with AI Parsing")
-                                } else {
-                                    Text("Add & Test Board")
-                                }
-                            }
-                            .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!canAddBoard || testingBoardId != nil)
-                    } else {
-                        // Primary style when it's the only button
-                        Button(action: addBoard) {
-                            HStack {
-                                Image(systemName: "plus.circle.fill")
-                                if isCustomSite {
-                                    Text("Add with AI Parsing")
-                                } else {
-                                    Text("Add & Test Board")
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!canAddBoard || testingBoardId != nil)
-                    }
-                }
-                
-                if testingBoardId != nil {
-                    HStack {
+            Button(action: startDetection) {
+                HStack {
+                    if monitor.detectionInProgress {
                         ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Testing...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .scaleEffect(0.7)
+                        Text("Detecting...")
+                    } else {
+                        Image(systemName: "magnifyingglass.circle.fill")
+                        Text("Detect & Preview")
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
             }
-            
+            .buttonStyle(.borderedProminent)
+            .disabled(!isValidURL || monitor.detectionInProgress)
+
             if !monitor.testResults.isEmpty {
                 TestResultsView()
             }
@@ -416,99 +237,196 @@ struct AddBoardSection: View {
         .padding()
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
-    }
-    
-    private func addBoard() {
-        // Use detected ATS URL if available, otherwise use original URL
-        // For custom sites (isCustomSite), we use the original URL for AI parsing
-        let finalUrl: String
-        if !urlToUse.isEmpty && !isCustomSite {
-            finalUrl = urlToUse
-        } else {
-            finalUrl = newBoardURL
+        .sheet(item: $detectionPreview) { preview in
+            DetectionConfirmationSheet(
+                boardName: $newBoardName,
+                boardURL: newBoardURL,
+                preview: preview,
+                onConfirm: { addBoard(with: preview) },
+                onCancel: { detectionPreview = nil }
+            )
         }
+    }
 
-        guard let config = JobBoardConfig(
-            name: newBoardName.isEmpty ? extractCompanyName(from: finalUrl) : newBoardName,
-            url: finalUrl
-        ) else { return }
-        
-        monitor.addBoardConfig(config)
-        
-        testingBoardId = config.id
+    private func startDetection() {
+        guard let url = URL(string: newBoardURL) else { return }
+
         Task {
-            await monitor.testSingleBoard(config)
-            await MainActor.run {
-                testingBoardId = nil
+            if let preview = await monitor.detectAndPreview(url: url) {
+                await MainActor.run {
+                    if newBoardName.isEmpty {
+                        newBoardName = extractCompanyName(from: newBoardURL)
+                    }
+                    detectionPreview = preview
+                }
             }
         }
-        
+    }
+
+    private func addBoard(with preview: JobBoardMonitor.DetectionPreview) {
+        let finalUrl = preview.queryURL
+
+        guard var config = JobBoardConfig(
+            name: newBoardName.isEmpty ? extractCompanyName(from: finalUrl) : newBoardName,
+            url: newBoardURL,
+            detectedATSURL: preview.queryURL != newBoardURL ? preview.queryURL : nil,
+            detectedATSType: preview.atsType,
+            parsingMethod: preview.parsingMethod
+        ) else { return }
+
+        config.lastJobCount = preview.jobCount
+        monitor.addBoardConfig(config)
+
         newBoardName = ""
         newBoardURL = ""
-        urlToUse = ""
-        detectionResult = nil
+        detectionPreview = nil
     }
-    
-    private func detectATS() {
-        guard let url = URL(string: newBoardURL) else {
-            detectionResult = ATSDetectorService.DetectionResult(
-                source: nil,
-                confidence: .notDetected,
-                apiEndpoint: nil,
-                actualATSUrl: nil,
-                message: "Invalid URL format"
-            )
-            return
-        }
-        
-        isDetecting = true
-        detectionResult = nil
-        urlToUse = ""
-        
-        Task {
-            do {
-                // Use enhanced detection instead
-                let result = try await ATSDetectorService.shared.detectATSEnhanced(from: url)
-                
-                await MainActor.run {
-                    detectionResult = result
-                    
-                    if let atsUrl = result.actualATSUrl {
-                        urlToUse = atsUrl
-                        
-                        if newBoardName.isEmpty, result.source != nil {
-                            newBoardName = extractCompanyName(from: atsUrl)
-                        }
-                    }
-                    
-                    isDetecting = false
-                }
-            } catch {
-                await MainActor.run {
-                    detectionResult = ATSDetectorService.DetectionResult(
-                        source: nil,
-                        confidence: .notDetected,
-                        apiEndpoint: nil,
-                        actualATSUrl: nil,
-                        message: "Error: \(error.localizedDescription)"
-                    )
-                    isDetecting = false
-                }
-            }
-        }
-    }
-        
+
     private func extractCompanyName(from urlString: String) -> String {
         guard let url = URL(string: urlString) else { return "" }
-        
+
         if let host = url.host {
             let parts = host.components(separatedBy: ".")
-            if parts.count > 0 && !["www", "careers", "jobs"].contains(parts[0]) {
+            if !parts.isEmpty && !["www", "careers", "jobs"].contains(parts[0]) {
                 return parts[0].capitalized
             }
         }
-        
+
         return ""
+    }
+}
+
+// MARK: - Detection Progress View
+
+struct DetectionProgressView: View {
+    let status: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .scaleEffect(0.8)
+            Text(status)
+                .font(.callout)
+                .foregroundColor(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.1))
+        .cornerRadius(8)
+    }
+}
+
+// MARK: - Detection Confirmation Sheet
+
+struct DetectionConfirmationSheet: View {
+    @Binding var boardName: String
+    let boardURL: String
+    let preview: JobBoardMonitor.DetectionPreview
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Add Job Board?")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundColor(.green)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Found \(preview.jobCount) jobs")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                        Text("via \(preview.parsingMethod.rawValue)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.green.opacity(0.1))
+                .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("Board Name", text: $boardName)
+                        .textFieldStyle(.roundedBorder)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Original URL", systemImage: "link")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(boardURL)
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                            .lineLimit(2)
+                    }
+
+                    if preview.queryURL != boardURL {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Query URL", systemImage: preview.parsingMethod.icon)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(preview.queryURL)
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                                .lineLimit(2)
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        Image(systemName: preview.parsingMethod.icon)
+                            .foregroundColor(.blue)
+                        Text("Parsing: \(preview.parsingMethod.rawValue)")
+                            .font(.callout)
+                        if let atsType = preview.atsType {
+                            Text("(\(atsType.capitalized))")
+                                .font(.callout)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(6)
+                }
+            }
+            .padding()
+
+            Divider()
+
+            HStack {
+                Button("Cancel") {
+                    onCancel()
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.escape)
+
+                Spacer()
+
+                Button("Add Job Board") {
+                    onConfirm()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.return)
+            }
+            .padding()
+        }
+        .frame(width: 450)
     }
 }
 
@@ -653,65 +571,3 @@ struct JobBoardsDocument: FileDocument {
     }
 }
 
-struct DetectionResultView: View {
-    let result: ATSDetectorService.DetectionResult
-    
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: iconName)
-                .foregroundColor(iconColor)
-            
-            Text(result.message)
-                .font(.callout)
-                .foregroundColor(textColor)
-            
-            Spacer()
-            
-            if let source = result.source {
-                Label(source.rawValue, systemImage: source.icon)
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(source.color.opacity(0.1))
-                    .cornerRadius(6)
-            }
-        }
-        .padding()
-        .background(backgroundColor)
-        .cornerRadius(8)
-    }
-    
-    private var iconName: String {
-        switch result.confidence {
-        case .certain: return "checkmark.circle.fill"
-        case .likely: return "questionmark.circle.fill"
-        case .uncertain: return "exclamationmark.triangle.fill"
-        case .notDetected: return "xmark.circle.fill"
-        }
-    }
-    
-    private var iconColor: Color {
-        switch result.confidence {
-        case .certain: return .green
-        case .likely: return .blue
-        case .uncertain: return .orange
-        case .notDetected: return .red
-        }
-    }
-    
-    private var textColor: Color {
-        switch result.confidence {
-        case .certain, .likely: return .primary
-        case .uncertain, .notDetected: return .secondary
-        }
-    }
-    
-    private var backgroundColor: Color {
-        switch result.confidence {
-        case .certain: return .green.opacity(0.1)
-        case .likely: return .blue.opacity(0.1)
-        case .uncertain: return .orange.opacity(0.1)
-        case .notDetected: return .red.opacity(0.1)
-        }
-    }
-}
