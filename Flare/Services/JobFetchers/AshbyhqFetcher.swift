@@ -7,62 +7,36 @@
 
 import Foundation
 
-actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
+actor AshbyFetcher: URLBasedJobFetcherProtocol {
 
     private let trackingService = JobTrackingService.shared
 
-    func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
-        return []
-    }
-
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let slug = extractAshbySlug(from: url)
-        print("[Ashby] Fetching jobs for: \(slug)")
-        print("[Ashby] Title filter: '\(titleFilter)', Location filter: '\(locationFilter)'")
 
         let storedJobDates = await trackingService.loadTrackingData(for: "ashby_\(slug)")
         let currentDate = Date()
 
         let jobs = try await fetchJobsViaGraphQL(slug: slug)
-        print("[Ashby] GraphQL returned \(jobs.count) total jobs")
-        
-        let titleKeywords = parseFilterString(titleFilter, includeRemote: false)
-        let locationKeywords = parseFilterString(locationFilter, includeRemote: false)
-        
-        let filteredJobs = jobs.compactMap { job -> Job? in
+
+        let titleKeywords = titleFilter.parseAsFilterKeywords()
+        let locationKeywords = locationFilter.parseAsFilterKeywords()
+
+        let allJobs = jobs.compactMap { job -> Job? in
             let location = job.locationName ?? "Location not specified"
-            let title = job.title
-            
-            if !titleKeywords.isEmpty {
-                let titleMatches = titleKeywords.contains { keyword in
-                    title.localizedCaseInsensitiveContains(keyword)
-                }
-                if !titleMatches {
-                    return nil
-                }
-            }
-            
-            if !locationKeywords.isEmpty {
-                let locationMatches = locationKeywords.contains { keyword in
-                    location.localizedCaseInsensitiveContains(keyword)
-                }
-                if !locationMatches {
-                    return nil
-                }
-            }
-            
+
             var fullLocation = location
             if !job.secondaryLocations.isEmpty {
                 let secondaryLocs = job.secondaryLocations.map { $0.locationName }.joined(separator: ", ")
                 fullLocation += " (+ \(secondaryLocs))"
             }
-            
+
             let jobId = "ashby-\(job.id)"
             let firstSeenDate = storedJobDates[jobId] ?? currentDate
-            
+
             return Job(
                 id: jobId,
-                title: title,
+                title: job.title,
                 location: fullLocation,
                 postingDate: nil,
                 url: "https://jobs.ashbyhq.com/\(slug)/\(job.id)",
@@ -77,7 +51,10 @@ actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 wasBumped: false
             )
         }
-        
+
+        let filteredJobs = allJobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
+        FetcherLog.info("Ashby", "Fetched \(allJobs.count) total, \(filteredJobs.count) after filtering")
+
         await trackingService.saveTrackingData(filteredJobs, for: "ashby_\(slug)", currentDate: currentDate, retentionDays: 30)
         return filteredJobs
     }
@@ -138,25 +115,19 @@ actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         }
         
         guard httpResponse.statusCode == 200 else {
-            if let errorString = String(data: data, encoding: .utf8) {
-                print("[Ashby] HTTP \(httpResponse.statusCode) response: \(errorString.prefix(500))")
-            }
+            FetcherLog.error("Ashby", "HTTP \(httpResponse.statusCode)")
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
-        
+
         let decoded: AshbyGraphQLResponse
         do {
             decoded = try JSONDecoder().decode(AshbyGraphQLResponse.self, from: data)
         } catch {
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("[Ashby] Decoding error: \(error)")
-                print("[Ashby] Response preview: \(responseString.prefix(500))")
-            }
+            FetcherLog.error("Ashby", "Decoding error: \(error.localizedDescription)")
             throw FetchError.decodingError(details: "Failed to decode Ashby response: \(error.localizedDescription)")
         }
-        
+
         guard let jobPostings = decoded.data.jobBoard?.jobPostings else {
-            print("[Ashby] No job postings found in response")
             throw FetchError.decodingError(details: "No job postings found in Ashby response")
         }
         
@@ -164,31 +135,7 @@ actor AshbyFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     }
     
     // MARK: - Helper Methods
-    
-    private func parseFilterString(_ filterString: String, includeRemote: Bool = true) -> [String] {
-        guard !filterString.isEmpty else { return [] }
-        
-        var keywords = filterString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        
-        if includeRemote {
-            let remoteKeywords = ["remote", "work from home", "distributed", "anywhere"]
-            let hasRemoteKeyword = keywords.contains { keyword in
-                remoteKeywords.contains { remote in
-                    keyword.localizedCaseInsensitiveContains(remote)
-                }
-            }
-            
-            if !hasRemoteKeyword {
-                keywords.append("remote")
-            }
-        }
-        
-        return keywords
-    }
-    
+
     private func extractAshbySlug(from url: URL) -> String {
         if let host = url.host, host.contains("ashbyhq.com") {
             return url.lastPathComponent

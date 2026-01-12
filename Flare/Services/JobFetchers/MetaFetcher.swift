@@ -48,10 +48,7 @@ actor MetaFetcher: JobFetcherProtocol {
             currentDate: currentDate
         )
 
-        // Deduplicate by job ID
-        let existingIds = Set(allJobs.map { $0.id })
-        let newRemoteJobs = remoteJobs.filter { !existingIds.contains($0.id) }
-        allJobs.append(contentsOf: newRemoteJobs)
+        allJobs = allJobs.merging(remoteJobs)
 
         guard !allJobs.isEmpty else {
             throw FetchError.noJobs

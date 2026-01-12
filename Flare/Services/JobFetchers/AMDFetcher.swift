@@ -34,9 +34,7 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
                 pageSize: pageSize
             )
 
-            let existingIds = Set(allJobs.map { $0.id })
-            let newRemoteJobs = remoteJobs.filter { !existingIds.contains($0.id) }
-            allJobs.append(contentsOf: newRemoteJobs)
+            allJobs = allJobs.merging(remoteJobs)
         }
 
         return allJobs
@@ -69,7 +67,7 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     }
     
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
-        let titleKeywords = parseFilterString(titleFilter)
+        let titleKeywords = titleFilter.parseAsFilterKeywords()
         return try await fetchJobs(
             titleKeywords: titleKeywords,
             location: locationFilter,
@@ -118,34 +116,30 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            print("[AMD] Invalid response object")
             throw FetchError.invalidResponse
         }
 
         guard httpResponse.statusCode == 200 else {
-            print("[AMD] HTTP error: \(httpResponse.statusCode)")
+            FetcherLog.error("AMD", "HTTP \(httpResponse.statusCode)")
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
 
         let amdResponse: AMDResponse
         do {
             amdResponse = try JSONDecoder().decode(AMDResponse.self, from: data)
-        } catch let DecodingError.keyNotFound(key, context) {
-            print("[AMD] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
-            throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in AMD response")
         } catch {
-            print("[AMD] Decoding error: \(error)")
+            FetcherLog.error("AMD", "Decoding error: \(error.localizedDescription)")
             throw FetchError.decodingError(details: "Failed to decode AMD response: \(error.localizedDescription)")
         }
         
-        let jobs = amdResponse.jobs.enumerated().compactMap { (index, amdJobWrapper) -> Job? in
-            convertAMDJob(amdJobWrapper, index: index)
+        let jobs = amdResponse.jobs.compactMap { amdJobWrapper -> Job? in
+            convertAMDJob(amdJobWrapper)
         }
         
         return jobs
     }
 
-    private func convertAMDJob(_ amdJobWrapper: AMDJobWrapper, index: Int) -> Job? {
+    private func convertAMDJob(_ amdJobWrapper: AMDJobWrapper) -> Job? {
         let jobData = amdJobWrapper.data
 
         guard !jobData.title.isEmpty, !jobData.slug.isEmpty, !jobData.req_id.isEmpty else {
@@ -168,7 +162,7 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             postingDate: postingDate,
             url: jobURL,
             description: fullDescription,
-            workSiteFlexibility: extractWorkFlexibility(from: fullDescription),
+            workSiteFlexibility: WorkFlexibility.extract(from: fullDescription),
             source: .amd,
             companyName: "AMD",
             department: jobData.category?.first,
@@ -213,19 +207,6 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         return formatter.date(from: dateString)
     }
     
-    private func extractWorkFlexibility(from description: String) -> String? {
-        let keywords = ["remote", "hybrid", "flexible", "onsite", "on-site"]
-        let lower = description.lowercased()
-        
-        for keyword in keywords {
-            if lower.contains(keyword) {
-                return keyword.capitalized
-            }
-        }
-        
-        return nil
-    }
-    
     private func parseLocationForAMD(_ locationString: String) -> String? {
         guard !locationString.isEmpty else { return nil }
         
@@ -252,15 +233,6 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         }
         
         return nil
-    }
-    
-    private func parseFilterString(_ filterString: String) -> [String] {
-        guard !filterString.isEmpty else { return [] }
-
-        return filterString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
     }
 }
 

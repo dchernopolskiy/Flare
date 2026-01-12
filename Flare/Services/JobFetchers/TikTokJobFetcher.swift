@@ -39,9 +39,7 @@ actor TikTokJobFetcher: JobFetcherProtocol {
                 currentDate: currentDate
             )
 
-            let existingIds = Set(allJobs.map { $0.id })
-            let newRemoteJobs = remoteJobs.filter { !existingIds.contains($0.id) }
-            allJobs.append(contentsOf: newRemoteJobs)
+            allJobs = allJobs.merging(remoteJobs)
         }
 
         await trackingService.saveTrackingData(allJobs, for: "tiktok", currentDate: currentDate, retentionDays: 30)
@@ -71,22 +69,13 @@ actor TikTokJobFetcher: JobFetcherProtocol {
                     break
                 }
                 
-                let converted = pageJobs.enumerated().compactMap { (index, tikTokJob) -> Job? in
-                    // Validate required fields
-                    guard !tikTokJob.title.isEmpty else {
-                        print("[TikTok] Skipping job at index \(index): empty title")
-                        return nil
-                    }
-                    
-                    guard !tikTokJob.id.isEmpty else {
-                        print("[TikTok] Skipping job at index \(index): empty ID")
-                        return nil
-                    }
-                    
+                let converted = pageJobs.compactMap { tikTokJob -> Job? in
+                    guard !tikTokJob.title.isEmpty, !tikTokJob.id.isEmpty else { return nil }
+
                     let locationString = buildLocationString(from: tikTokJob.city_info)
                     let jobId = "tiktok-\(tikTokJob.id)"
                     let firstSeenDate = trackingData[jobId] ?? currentDate
-                    
+
                     return Job(
                         id: jobId,
                         title: tikTokJob.title,
@@ -94,7 +83,7 @@ actor TikTokJobFetcher: JobFetcherProtocol {
                         postingDate: nil,
                         url: "https://lifeattiktok.com/search/\(tikTokJob.id)",
                         description: combineDescriptionAndRequirements(tikTokJob),
-                        workSiteFlexibility: extractWorkFlexibility(from: tikTokJob.description),
+                        workSiteFlexibility: WorkFlexibility.extract(from: tikTokJob.description),
                         source: .tiktok,
                         companyName: "TikTok",
                         department: tikTokJob.job_category?.en_name,
@@ -116,10 +105,10 @@ actor TikTokJobFetcher: JobFetcherProtocol {
 
                 try await Task.sleep(nanoseconds: FetchDelayConfig.fetchPageDelay)
             } catch let error as FetchError {
-                print("[TikTok] Fetch error on page \(pageNumber): \(error.errorDescription ?? "Unknown")")
+                FetcherLog.error("TikTok", "Fetch error on page \(pageNumber): \(error.errorDescription ?? "Unknown")")
                 throw error
             } catch {
-                print("[TikTok] Unexpected error on page \(pageNumber): \(error)")
+                FetcherLog.error("TikTok", "Unexpected error on page \(pageNumber): \(error.localizedDescription)")
                 throw FetchError.networkError(error)
             }
         }
@@ -162,9 +151,7 @@ actor TikTokJobFetcher: JobFetcherProtocol {
         do {
             decoded = try JSONDecoder().decode(TikTokAPIResponse.self, from: data)
         } catch {
-            let preview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to preview"
-            print("[TikTok] Decoding error: \(error)")
-            print("[TikTok] Response preview: \(preview)")
+            FetcherLog.error("TikTok", "Decoding error: \(error.localizedDescription)")
             throw FetchError.decodingError(details: "Failed to decode TikTok response: \(error.localizedDescription)")
         }
         
@@ -206,15 +193,6 @@ actor TikTokJobFetcher: JobFetcherProtocol {
             combined += "\n\nRequirements:\n" + job.requirement
         }
         return combined
-    }
-    
-    private func extractWorkFlexibility(from description: String) -> String? {
-        let keywords = ["remote", "hybrid", "flexible", "onsite", "on-site", "in-office"]
-        let lower = description.lowercased()
-        for key in keywords where lower.contains(key) {
-            return key.capitalized
-        }
-        return nil
     }
 }
 

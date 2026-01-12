@@ -18,11 +18,12 @@ actor SnapFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
 
         let jobs = try await fetchAllJobs(trackingData: trackingData, currentDate: currentDate)
 
-        let filteredJobs = applyFilters(jobs: jobs, titleKeywords: titleKeywords, location: location)
+        let locationKeywords = location.parseAsFilterKeywords()
+        let filteredJobs = jobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
 
         await trackingService.saveTrackingData(filteredJobs, for: "snap", currentDate: currentDate, retentionDays: 30)
-        
-        print("[Snap] Fetched \(jobs.count) total jobs, \(filteredJobs.count) after filtering")
+
+        FetcherLog.info("Snap", "Fetched \(jobs.count) total, \(filteredJobs.count) after filtering")
         return filteredJobs
     }
     
@@ -45,49 +46,30 @@ actor SnapFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
         
-        print("[Snap] Fetching from: \(url)")
-        
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw FetchError.invalidResponse
         }
-        
+
         guard httpResponse.statusCode == 200 else {
-            if let errorString = String(data: data, encoding: .utf8) {
-                print("[Snap] Error response: \(errorString.prefix(200))")
-            }
+            FetcherLog.error("Snap", "HTTP \(httpResponse.statusCode)")
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
-        
+
         let decoded: SnapResponse
         do {
             decoded = try JSONDecoder().decode(SnapResponse.self, from: data)
-        } catch let DecodingError.keyNotFound(key, context) {
-            print("[Snap] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("[Snap] Response preview: \(responseString.prefix(500))")
-            }
-            throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Snap response")
         } catch {
-            print("[Snap] Decoding error: \(error)")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("[Snap] Response preview: \(responseString.prefix(500))")
-            }
+            FetcherLog.error("Snap", "Decoding error: \(error.localizedDescription)")
             throw FetchError.decodingError(details: "Failed to decode Snap response: \(error.localizedDescription)")
         }
         
-        let jobs = decoded.body.enumerated().compactMap { (index, snapJob) -> Job? in
-            guard let source = snapJob._source else {
-                print("[Snap] Skipping job at index \(index): missing _source")
-                return nil
-            }
-            
+        let jobs = decoded.body.compactMap { snapJob -> Job? in
+            guard let source = snapJob._source else { return nil }
+
             let title = source.title ?? "Untitled Position"
-            guard !title.isEmpty else {
-                print("[Snap] Skipping job at index \(index): empty title")
-                return nil
-            }
+            guard !title.isEmpty else { return nil }
             
             let locationString = buildLocationString(from: source)
             
@@ -145,78 +127,20 @@ actor SnapFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         return "Location not specified"
     }
     
-    private func applyFilters(jobs: [Job], titleKeywords: [String], location: String) -> [Job] {
-        var filteredJobs = jobs
-        
-        if !titleKeywords.isEmpty {
-            let keywords = titleKeywords.filter { !$0.isEmpty }
-            if !keywords.isEmpty {
-                filteredJobs = filteredJobs.filter { job in
-                    keywords.contains { keyword in
-                        job.title.localizedCaseInsensitiveContains(keyword) ||
-                        job.department?.localizedCaseInsensitiveContains(keyword) ?? false ||
-                        job.category?.localizedCaseInsensitiveContains(keyword) ?? false
-                    }
-                }
-            }
-        }
-        
-        if !location.isEmpty {
-            let locationKeywords = parseLocationString(location)
-            if !locationKeywords.isEmpty {
-                filteredJobs = filteredJobs.filter { job in
-                    locationKeywords.contains { keyword in
-                        job.location.localizedCaseInsensitiveContains(keyword)
-                    }
-                }
-            }
-        }
-        
-        return filteredJobs
-    }
-    
-    private func parseLocationString(_ locationString: String) -> [String] {
-        guard !locationString.isEmpty else { return [] }
-        
-        var keywords = locationString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        
-        if keywords.contains(where: { $0.localizedCaseInsensitiveContains("remote") }) {
-            if !keywords.contains("remote") {
-                keywords.append("remote")
-            }
-            if !keywords.contains("Remote") {
-                keywords.append("Remote")
-            }
-        }
-        
-        return keywords
-    }
-    
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
-        let titleKeywords = parseFilterString(titleFilter)
+        let titleKeywords = titleFilter.parseAsFilterKeywords()
 
         let trackingData = await trackingService.loadTrackingData(for: "snap")
         let currentDate = Date()
 
         let jobs = try await fetchAllJobs(trackingData: trackingData, currentDate: currentDate)
 
-        let filteredJobs = applyFilters(jobs: jobs, titleKeywords: titleKeywords, location: locationFilter)
+        let locationKeywords = locationFilter.parseAsFilterKeywords()
+        let filteredJobs = jobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
 
         await trackingService.saveTrackingData(filteredJobs, for: "snap", currentDate: currentDate, retentionDays: 30)
 
         return filteredJobs
-    }
-
-    private func parseFilterString(_ filterString: String) -> [String] {
-        guard !filterString.isEmpty else { return [] }
-
-        return filterString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
     }
 }
 

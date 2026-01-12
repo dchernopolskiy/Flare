@@ -11,6 +11,33 @@ import Foundation
 import Combine
 import UserNotifications
 import AppKit
+import os.log
+
+// MARK: - Filter String Parsing
+extension String {
+    /// Parse a comma-separated filter string into an array of trimmed, non-empty keywords.
+    /// Used by job fetchers to parse title/location filters.
+    func parseAsFilterKeywords() -> [String] {
+        guard !isEmpty else { return [] }
+        return split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+extension Array where Element == String {
+    /// Appends "remote" keyword if no remote-related keyword is already present.
+    /// Used by location filters to automatically include remote positions.
+    func includingRemote() -> [String] {
+        let remoteKeywords = ["remote", "work from home", "distributed", "anywhere"]
+        let hasRemoteKeyword = contains { keyword in
+            remoteKeywords.contains { remote in
+                keyword.localizedCaseInsensitiveContains(remote)
+            }
+        }
+        return hasRemoteKeyword ? self : self + ["remote"]
+    }
+}
 
 // MARK: - Job Filtering
 extension Array where Element == Job {
@@ -34,6 +61,84 @@ extension Array where Element == Job {
         }
 
         return result
+    }
+
+    /// Appends jobs from another array, excluding duplicates by ID.
+    /// Returns a new array with this array's jobs plus unique jobs from the other array.
+    func merging(_ other: [Job]) -> [Job] {
+        let existingIds = Set(map { $0.id })
+        let newJobs = other.filter { !existingIds.contains($0.id) }
+        return self + newJobs
+    }
+
+    /// Applies title and location keyword filters to jobs.
+    /// Title filter matches against title, department, and category.
+    /// Location filter matches against location field.
+    func applying(titleKeywords: [String], locationKeywords: [String]) -> [Job] {
+        var result = self
+
+        if !titleKeywords.isEmpty {
+            let keywords = titleKeywords.filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                result = result.filter { job in
+                    keywords.contains { keyword in
+                        job.title.localizedCaseInsensitiveContains(keyword) ||
+                        job.department?.localizedCaseInsensitiveContains(keyword) ?? false ||
+                        job.category?.localizedCaseInsensitiveContains(keyword) ?? false
+                    }
+                }
+            }
+        }
+
+        if !locationKeywords.isEmpty {
+            let keywords = locationKeywords.filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                result = result.filter { job in
+                    keywords.contains { keyword in
+                        job.location.localizedCaseInsensitiveContains(keyword)
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+}
+
+// MARK: - Work Flexibility Extraction
+enum WorkFlexibility {
+    private static let keywords = ["remote", "hybrid", "flexible", "work from home", "onsite", "on-site", "in-office"]
+
+    /// Extracts work flexibility type from job description text.
+    static func extract(from text: String) -> String? {
+        let lowercased = text.lowercased()
+        for keyword in keywords {
+            if lowercased.contains(keyword) {
+                return keyword.capitalized
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - Fetcher Logging
+enum FetcherLog {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.flare", category: "Fetcher")
+
+    static func info(_ source: String, _ message: String) {
+        logger.info("[\(source)] \(message)")
+    }
+
+    static func debug(_ source: String, _ message: String) {
+        logger.debug("[\(source)] \(message)")
+    }
+
+    static func error(_ source: String, _ message: String) {
+        logger.error("[\(source)] \(message)")
+    }
+
+    static func warning(_ source: String, _ message: String) {
+        logger.warning("[\(source)] \(message)")
     }
 }
 
