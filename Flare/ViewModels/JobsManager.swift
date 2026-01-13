@@ -77,8 +77,9 @@ class JobManager: ObservableObject {
         let cutoff: TimeInterval = 172800
         filtered = filtered.filter { job in
             if job.isBumpedRecently { return true }
-            let date = job.postingDate ?? job.firstSeenDate
-            return Date().timeIntervalSince(date) <= cutoff
+            if Date().timeIntervalSince(job.firstSeenDate) <= cutoff { return true }
+            if let postingDate = job.postingDate, Date().timeIntervalSince(postingDate) <= cutoff { return true }
+            return false
         }
 
         // Title filter
