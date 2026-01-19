@@ -102,17 +102,13 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
 
     // MARK: - Embedded JSON Parsing
 
-    /// Parse jobs from the embedded JSON data structure in Google's career pages
-    /// The data is in format: data: [[[jobId, title, url, ...], ...], null, count, pageSize]
     private func parseEmbeddedJSON(_ html: String, trackingData: [String: Date], currentDate: Date) -> [Job] {
         var jobs: [Job] = []
 
-        // Look for the data array pattern - it starts after "data:" and contains job arrays
         guard let dataStart = html.range(of: "data: [[") else {
             return []
         }
 
-        // Find the end of the data array by counting brackets
         let searchStart = dataStart.lowerBound
         var depth = 0
         var inString = false

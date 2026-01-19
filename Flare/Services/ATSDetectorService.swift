@@ -729,11 +729,9 @@ actor ATSDetectorService {
 
 extension ATSDetectorService {
     
-    // Add this method to enhance detection with JavaScript rendering
     func detectATSEnhanced(from url: URL) async throws -> DetectionResult {
         print("[ATS Detector] Starting enhanced detection for: \(url.absoluteString)")
-        
-        // Step 1: Try your existing quick detection first
+
         if let quickMatch = JobSource.detectFromURL(url.absoluteString) {
             print("[ATS Detector] Quick match found: \(quickMatch.rawValue)")
             return DetectionResult(
@@ -744,18 +742,14 @@ extension ATSDetectorService {
                 message: "Detected \(quickMatch.rawValue) from URL pattern"
             )
         }
-        
-        // Step 2: Try JavaScript rendering for dynamic content (NEW)
+
         if let jsResult = await detectWithJavaScriptRendering(url: url) {
             print("[ATS Detector] Found via JS rendering: \(jsResult.source?.rawValue ?? "unknown")")
             return jsResult
         }
-        
-        // Step 3: Fall back to your existing detection methods
+
         return try await detectATS(from: url)
     }
-    
-    // MARK: - JavaScript Rendering Detection (NEW)
     @MainActor
     private func detectWithJavaScriptRendering(url: URL) async -> DetectionResult? {
         return await withCheckedContinuation { continuation in

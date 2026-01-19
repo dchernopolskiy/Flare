@@ -134,8 +134,6 @@ actor LLMParser {
         let confidence: String        // high, medium, low
     }
 
-    /// Use LLM to detect ATS URLs and API endpoints in HTML/JS content
-    /// This catches patterns that regex might miss (e.g., obfuscated URLs, context-based detection)
     func detectPatternsInContent(_ content: String, sourceURL: URL) async throws -> PatternDetectionResult? {
         if !isLoaded {
             try await loadModel()
@@ -453,8 +451,6 @@ actor LLMParser {
                         searchIndex = truncated.index(after: searchIndex)
 
                         if braceCount == 0 {
-                            // We found a complete object, now properly close the JSON
-                            // Count how many brackets we need to close from the start
                             let prefix = String(json[..<arrayStart.lowerBound])
                             let openBraces = prefix.filter { $0 == "{" }.count - prefix.filter { $0 == "}" }.count
 

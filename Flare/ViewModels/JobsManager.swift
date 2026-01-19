@@ -73,12 +73,15 @@ class JobManager: ObservableObject {
 
         var filtered = allJobsSorted
 
-        // 48h date filter
-        let cutoff: TimeInterval = 172800
+        // 48h date filter based on posting date, with 24h grace for newly discovered jobs
+        let postingCutoff: TimeInterval = 172800  // 48 hours
+        let discoveryCutoff: TimeInterval = 86400  // 24 hours
         filtered = filtered.filter { job in
             if job.isBumpedRecently { return true }
-            if Date().timeIntervalSince(job.firstSeenDate) <= cutoff { return true }
-            if let postingDate = job.postingDate, Date().timeIntervalSince(postingDate) <= cutoff { return true }
+            // Primary: show if posted within 48h
+            if let postingDate = job.postingDate, Date().timeIntervalSince(postingDate) <= postingCutoff { return true }
+            // Fallback: show recently discovered jobs (no posting date or just found) for 24h
+            if Date().timeIntervalSince(job.firstSeenDate) <= discoveryCutoff { return true }
             return false
         }
 
@@ -366,7 +369,6 @@ class JobManager: ObservableObject {
         isLoading = false
     }
 
-    /// Fetches jobs from a single source with tracking and error handling
     private func fetchSourceJobs(
         source: JobSource,
         name: String,
@@ -543,14 +545,22 @@ class JobManager: ObservableObject {
     private func processNewJobs(_ newJobs: [Job], sourceJobsMap: [JobSource: [Job]]) async {
         newJobs.forEach { storedJobIds.insert($0.id) }
 
-        // Combine and deduplicate
+        // Start with existing jobs and merge new fetch results
         var seenIds = Set<String>()
         var uniqueJobs: [Job] = []
+
+        // First add all jobs from the current fetch (they have updated data)
         for jobs in sourceJobsMap.values {
             for job in jobs where !seenIds.contains(job.id) {
                 uniqueJobs.append(job)
                 seenIds.insert(job.id)
             }
+        }
+
+        // Then add existing jobs that weren't in this fetch (preserves jobs from disabled sources)
+        for job in allJobs where !seenIds.contains(job.id) {
+            uniqueJobs.append(job)
+            seenIds.insert(job.id)
         }
 
         allJobs = uniqueJobs

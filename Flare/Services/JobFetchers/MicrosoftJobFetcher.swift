@@ -11,6 +11,7 @@ actor MicrosoftJobFetcher: JobFetcherProtocol {
     private let baseURL = "https://apply.careers.microsoft.com/api/pcsx/search"
     private let detailsBaseURL = "https://apply.careers.microsoft.com/api/pcsx/position_details"
     private var descriptionCache: [String: String] = [:] // positionId -> description
+    private let trackingService = JobTrackingService.shared
 
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int = 5) async throws -> [Job] {
         print("[Microsoft] Starting fetch with location: '\(location)'")
@@ -145,9 +146,35 @@ actor MicrosoftJobFetcher: JobFetcherProtocol {
         }
 
         print("[Microsoft] Completed fetching descriptions for \(jobsWithDescriptions.count) jobs")
-        return jobsWithDescriptions
+
+        // Preserve firstSeenDate for jobs we've seen before
+        let storedJobDates = await trackingService.loadTrackingData(for: "microsoft")
+        let currentDate = Date()
+
+        let finalJobs = jobsWithDescriptions.map { job -> Job in
+            let firstSeenDate = storedJobDates[job.id] ?? currentDate
+            return Job(
+                id: job.id,
+                title: job.title,
+                location: job.location,
+                postingDate: job.postingDate,
+                url: job.url,
+                description: job.description,
+                workSiteFlexibility: job.workSiteFlexibility,
+                source: job.source,
+                companyName: job.companyName,
+                department: job.department,
+                category: job.category,
+                firstSeenDate: firstSeenDate,
+                originalPostingDate: job.originalPostingDate,
+                wasBumped: job.wasBumped
+            )
+        }
+
+        await trackingService.saveTrackingData(finalJobs, for: "microsoft", currentDate: currentDate, retentionDays: 30)
+        return finalJobs
     }
-    
+
     private func executeIndividualSearch(title: String, location: String, maxPages: Int) async throws -> [Job] {
         var jobs: [Job] = []
         let pageSize = 10  // Microsoft API returns 10 results per page

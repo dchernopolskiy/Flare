@@ -53,8 +53,6 @@ struct JobBoardConfig: Identifiable, Codable {
         return source.isSupported
     }
 
-    /// The effective URL to use for fetching jobs
-    /// Returns detectedATSURL if available, otherwise the original URL
     var effectiveURL: String {
         return detectedATSURL ?? url
     }

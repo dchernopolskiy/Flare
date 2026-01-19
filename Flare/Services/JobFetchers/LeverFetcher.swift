@@ -8,8 +8,13 @@
 import Foundation
 
 actor LeverFetcher: URLBasedJobFetcherProtocol {
+
+    private let trackingService = JobTrackingService.shared
+
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let slug = extractLeverSlug(from: url)
+        let storedJobDates = await trackingService.loadTrackingData(for: "lever_\(slug)")
+        let currentDate = Date()
 
         guard let apiURL = URL(string: "https://api.lever.co/v0/postings/\(slug)?mode=json") else {
             throw FetchError.invalidURL
@@ -45,9 +50,11 @@ actor LeverFetcher: URLBasedJobFetcherProtocol {
             guard !job.text.isEmpty, !job.id.isEmpty, !job.hostedUrl.isEmpty else { return nil }
 
             let location = job.categories.location ?? "Location not specified"
+            let jobId = "lever-\(job.id)"
+            let firstSeenDate = storedJobDates[jobId] ?? currentDate
 
             return Job(
-                id: "lever-\(job.id)",
+                id: jobId,
                 title: job.text,
                 location: location,
                 postingDate: ISO8601DateFormatter().date(from: job.createdAt),
@@ -58,7 +65,7 @@ actor LeverFetcher: URLBasedJobFetcherProtocol {
                 companyName: slug.capitalized,
                 department: job.categories.team,
                 category: job.categories.commitment,
-                firstSeenDate: Date(),
+                firstSeenDate: firstSeenDate,
                 originalPostingDate: nil,
                 wasBumped: false
             )
@@ -67,6 +74,7 @@ actor LeverFetcher: URLBasedJobFetcherProtocol {
         let filteredJobs = allJobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
         FetcherLog.info("Lever", "Fetched \(allJobs.count) total, \(filteredJobs.count) after filtering")
 
+        await trackingService.saveTrackingData(filteredJobs, for: "lever_\(slug)", currentDate: currentDate, retentionDays: 30)
         return filteredJobs
     }
     

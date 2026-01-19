@@ -815,8 +815,6 @@ actor SmartJobParser {
         }
     }
 
-    /// Try simple JSON extraction without LLM (for when LLM previously failed)
-    /// This uses heuristics to find job arrays in common JSON structures
     private func trySimpleAPIExtraction(
         apiCall: DetectedAPICall,
         baseURL: URL,
@@ -1152,14 +1150,10 @@ actor SmartJobParser {
                 cleanURL = String(cleanURL[..<range.lowerBound]) + "/"
             }
         case "greenhouse":
-            // Greenhouse format: https://boards.greenhouse.io/company/jobs/12345
-            // We want: https://boards.greenhouse.io/company
             if let range = cleanURL.range(of: "/jobs/", options: .caseInsensitive) {
                 cleanURL = String(cleanURL[..<range.lowerBound])
             }
         case "lever":
-            // Lever format: https://jobs.lever.co/company/job-id
-            // We want: https://jobs.lever.co/company
             if let url = URL(string: cleanURL),
                let host = url.host,
                host.contains("lever.co") {
@@ -1169,8 +1163,6 @@ actor SmartJobParser {
                 }
             }
         case "ashby":
-            // Ashby format: https://jobs.ashbyhq.com/company/job-id
-            // We want: https://jobs.ashbyhq.com/company
             if let url = URL(string: cleanURL),
                let host = url.host,
                host.contains("ashbyhq.com") {

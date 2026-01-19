@@ -33,8 +33,12 @@ struct GreenhouseJob: Codable {
 // MARK: - Greenhouse Fetcher
 actor GreenhouseFetcher {
 
+    private let trackingService = JobTrackingService.shared
+
     func fetchGreenhouseJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let boardSlug = extractGreenhouseBoardSlug(from: url)
+        let storedJobDates = await trackingService.loadTrackingData(for: "greenhouse_\(boardSlug)")
+        let currentDate = Date()
         let apiURL = URL(string: "https://boards-api.greenhouse.io/v1/boards/\(boardSlug)/jobs?content=true")!
 
         var request = URLRequest(url: apiURL)
@@ -84,8 +88,11 @@ actor GreenhouseFetcher {
             let cleanDescription = HTMLCleaner.cleanHTML(ghJob.content ?? "")
             let location = rawLocation.isEmpty ? "Not specified" : rawLocation
 
+            let jobId = "gh-\(ghJob.id)"
+            let firstSeenDate = storedJobDates[jobId] ?? currentDate
+
             return Job(
-                id: "gh-\(ghJob.id)",
+                id: jobId,
                 title: ghJob.title,
                 location: location,
                 postingDate: postingDate,
@@ -96,7 +103,7 @@ actor GreenhouseFetcher {
                 companyName: extractCompanyName(from: url),
                 department: ghJob.departments?.first?.name,
                 category: nil,
-                firstSeenDate: Date(),
+                firstSeenDate: firstSeenDate,
                 originalPostingDate: nil,
                 wasBumped: false
             )
@@ -105,6 +112,7 @@ actor GreenhouseFetcher {
         let filteredJobs = allJobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
         FetcherLog.info("Greenhouse", "Fetched \(allJobs.count) total, \(filteredJobs.count) after filtering")
 
+        await trackingService.saveTrackingData(filteredJobs, for: "greenhouse_\(boardSlug)", currentDate: currentDate, retentionDays: 30)
         return filteredJobs
     }
     
