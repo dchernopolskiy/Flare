@@ -12,35 +12,62 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     
     func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
         let safeMaxPages = max(1, min(maxPages, 20))
-        var allJobs: [Job] = []
+        var allJobs = [Job]()
         let pageSize = 20
         let locationQuery = parseLocationForAMD(location)
-        
-        for page in 1...safeMaxPages {
+        let keywords = titleKeywords.joined(separator: " ")
+
+        // Fetch with regular location
+        allJobs = try await fetchJobsWithLocation(
+            keywords: keywords,
+            location: locationQuery,
+            maxPages: safeMaxPages,
+            pageSize: pageSize
+        )
+
+        // Also fetch remote jobs unless user already specified remote
+        if !location.lowercased().contains("remote") {
+            let remoteJobs = try await fetchJobsWithLocation(
+                keywords: keywords,
+                location: "remote",
+                maxPages: safeMaxPages,
+                pageSize: pageSize
+            )
+
+            allJobs = allJobs.merging(remoteJobs)
+        }
+
+        return allJobs
+    }
+
+    private func fetchJobsWithLocation(keywords: String, location: String?, maxPages: Int, pageSize: Int) async throws -> [Job] {
+        var jobs = [Job]()
+
+        for page in 1...maxPages {
             let pageJobs = try await fetchJobsPage(
                 page: page,
-                keywords: titleKeywords.joined(separator: " "),
-                location: locationQuery
+                keywords: keywords,
+                location: location
             )
-            
+
             if pageJobs.isEmpty {
                 break
             }
-            
-            allJobs.append(contentsOf: pageJobs)
-            
+
+            jobs.append(contentsOf: pageJobs)
+
             if pageJobs.count < pageSize {
                 break
             }
 
             try await Task.sleep(nanoseconds: FetchDelayConfig.boardFetchDelay)
         }
-        
-        return allJobs
+
+        return jobs
     }
     
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
-        let titleKeywords = parseFilterString(titleFilter)
+        let titleKeywords = titleFilter.parseAsFilterKeywords()
         return try await fetchJobs(
             titleKeywords: titleKeywords,
             location: locationFilter,
@@ -89,61 +116,36 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            print("🔴”´ [AMD] ❌ Invalid response object")
             throw FetchError.invalidResponse
         }
-        
+
         guard httpResponse.statusCode == 200 else {
-            print("🔴”´ [AMD] ❌ HTTP error: \(httpResponse.statusCode)")
-            if let errorString = String(data: data, encoding: .utf8) {
-                print("🔴”´ [AMD] Response preview: \(errorString.prefix(200))")
-            }
+            FetcherLog.error("AMD", "HTTP \(httpResponse.statusCode)")
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
-        
-        let decoder = JSONDecoder()
+
         let amdResponse: AMDResponse
         do {
-            amdResponse = try decoder.decode(AMDResponse.self, from: data)
-        } catch let DecodingError.keyNotFound(key, context) {
-            print("🔴”´ [AMD] ❌ Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("🔴”´ [AMD] Response preview: \(responseString.prefix(500))")
-            }
-            throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in AMD response")
+            amdResponse = try JSONDecoder().decode(AMDResponse.self, from: data)
         } catch {
-            print("🔴”´ [AMD] ❌ Decoding error: \(error)")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("🔴”´ [AMD] Response preview: \(responseString.prefix(500))")
-            }
+            FetcherLog.error("AMD", "Decoding error: \(error.localizedDescription)")
             throw FetchError.decodingError(details: "Failed to decode AMD response: \(error.localizedDescription)")
         }
         
-        let jobs = amdResponse.jobs.enumerated().compactMap { (index, amdJobWrapper) -> Job? in
-            convertAMDJob(amdJobWrapper, index: index)
+        let jobs = amdResponse.jobs.compactMap { amdJobWrapper -> Job? in
+            convertAMDJob(amdJobWrapper)
         }
         
         return jobs
     }
-    
-    private func convertAMDJob(_ amdJobWrapper: AMDJobWrapper, index: Int) -> Job? {
+
+    private func convertAMDJob(_ amdJobWrapper: AMDJobWrapper) -> Job? {
         let jobData = amdJobWrapper.data
-        
-        guard !jobData.title.isEmpty else {
-            print("🔴”´ [AMD]¸ Skipping job at index \(index): empty title")
+
+        guard !jobData.title.isEmpty, !jobData.slug.isEmpty, !jobData.req_id.isEmpty else {
             return nil
         }
-        
-        guard !jobData.slug.isEmpty else {
-            print("🔴”[AMD]¸ Skipping job '\(jobData.title)' at index \(index): empty slug")
-            return nil
-        }
-        
-        guard !jobData.req_id.isEmpty else {
-            print("🔴”[AMD]¸ Skipping job '\(jobData.title)' at index \(index): empty req_id")
-            return nil
-        }
-        
+
         let location = buildLocationString(from: jobData)
         let postingDate = parseAMDDate(jobData.posted_date)
         let jobURL = "https://careers.amd.com/careers-home/jobs/\(jobData.req_id)?lang=en-us"
@@ -160,7 +162,7 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             postingDate: postingDate,
             url: jobURL,
             description: fullDescription,
-            workSiteFlexibility: extractWorkFlexibility(from: fullDescription),
+            workSiteFlexibility: WorkFlexibility.extract(from: fullDescription),
             source: .amd,
             companyName: "AMD",
             department: jobData.category?.first,
@@ -172,30 +174,24 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
     }
     
     private func buildLocationString(from jobData: AMDJobData) -> String {
-        var parts: [String] = []
-        
-        if let city = jobData.city, !city.isEmpty {
-            parts.append(city)
-        }
-        
-        if let state = jobData.state, !state.isEmpty {
-            parts.append(state)
-        }
-        
-        if parts.isEmpty {
-            if let locationName = jobData.location_name, !locationName.isEmpty {
-                let locationParts = locationName.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                if locationParts.count >= 3 {
-                    return "\(locationParts[2]), \(locationParts[1])"
-                } else if locationParts.count == 2 {
-                    return locationParts.joined(separator: ", ")
-                }
-                return locationName
-            }
+        var parts = [String]()
+
+        if let city = jobData.city, !city.isEmpty { parts.append(city) }
+        if let state = jobData.state, !state.isEmpty { parts.append(state) }
+
+        guard parts.isEmpty else { return parts.joined(separator: ", ") }
+
+        guard let locationName = jobData.location_name, !locationName.isEmpty else {
             return "Location not specified"
         }
-        
-        return parts.joined(separator: ", ")
+
+        let locationParts = locationName.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        if locationParts.count >= 3 {
+            return "\(locationParts[2]), \(locationParts[1])"
+        } else if locationParts.count == 2 {
+            return locationParts.joined(separator: ", ")
+        }
+        return locationName
     }
     
     private func parseAMDDate(_ dateString: String?) -> Date? {
@@ -209,19 +205,6 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: dateString)
-    }
-    
-    private func extractWorkFlexibility(from description: String) -> String? {
-        let keywords = ["remote", "hybrid", "flexible", "onsite", "on-site"]
-        let lower = description.lowercased()
-        
-        for keyword in keywords {
-            if lower.contains(keyword) {
-                return keyword.capitalized
-            }
-        }
-        
-        return nil
     }
     
     private func parseLocationForAMD(_ locationString: String) -> String? {
@@ -250,15 +233,6 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         }
         
         return nil
-    }
-    
-    private func parseFilterString(_ filterString: String) -> [String] {
-        guard !filterString.isEmpty else { return [] }
-
-        return filterString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
     }
 }
 

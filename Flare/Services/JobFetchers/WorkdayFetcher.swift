@@ -7,15 +7,11 @@
 
 import Foundation
 
-actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
+actor WorkdayFetcher: URLBasedJobFetcherProtocol {
 
     private var locationCache: [String: [WorkdayLocation]] = [:]
     private var sessionCache: [String: WorkdaySession] = [:]
     private let trackingService = JobTrackingService.shared
-
-    func fetchJobs(titleKeywords: [String], location: String, maxPages: Int) async throws -> [Job] {
-        return []
-    }
 
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let config = try await extractWorkdayConfig(from: url)
@@ -66,7 +62,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             company: config.cacheKey
         )
         
-        let titleKeywords = parseFilterString(titleFilter, includeRemote: false)
+        let titleKeywords = titleFilter.parseAsFilterKeywords()
         let searchText = titleKeywords.joined(separator: " ")
         var allJobs: [Job] = []
         var offset = 0
@@ -109,7 +105,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
 
         let filteredJobs: [Job]
         if shouldApplyLocationFilter {
-            let locationKeywords = parseFilterString(locationFilter, includeRemote: false)
+            let locationKeywords = locationFilter.parseAsFilterKeywords()
             filteredJobs = applyClientSideFilters(
                 jobs: allJobs,
                 titleKeywords: [],
@@ -377,7 +373,7 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             return []
         }
         
-        let keywords = parseFilterString(locationFilter, includeRemote: false)
+        let keywords = locationFilter.parseAsFilterKeywords()
         var locationIds: [String] = []
         
         for keyword in keywords {
@@ -511,16 +507,6 @@ actor WorkdayFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         print("[Workday] Extracted config - company: \(company), instance: \(instance), siteName: \(siteName)")
         return WorkdayConfig(company: company, instance: instance, siteName: siteName)
     }
-    
-    private func parseFilterString(_ filterString: String, includeRemote: Bool = true) -> [String] {
-        guard !filterString.isEmpty else { return [] }
-        
-        return filterString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-    
 }
 
 // MARK: - Workday Config

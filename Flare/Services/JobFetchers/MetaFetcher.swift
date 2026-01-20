@@ -26,18 +26,34 @@ actor MetaFetcher: JobFetcherProtocol {
         let currentDate = Date()
         let offices = MetaLocationService.getMetaOffices(from: location)
         let tokens = try await extractPageTokens()
-        let allJobs = try await fetchJobsPage(
-            query: titleKeywords.joined(separator: " "),
+        let query = titleKeywords.joined(separator: " ")
+
+        // Fetch regular (office) jobs
+        var allJobs = try await fetchJobsPage(
+            query: query,
             offices: offices,
+            isRemoteOnly: false,
             tokens: tokens,
             trackingData: trackingData,
             currentDate: currentDate
         )
-        
+
+        // Also fetch remote jobs and merge
+        let remoteJobs = try await fetchJobsPage(
+            query: query,
+            offices: [],
+            isRemoteOnly: true,
+            tokens: tokens,
+            trackingData: trackingData,
+            currentDate: currentDate
+        )
+
+        allJobs = allJobs.merging(remoteJobs)
+
         guard !allJobs.isEmpty else {
             throw FetchError.noJobs
         }
-        
+
         await trackingService.saveTrackingData(allJobs, for: "meta", currentDate: currentDate, retentionDays: 30)
         return allJobs
     }
@@ -81,6 +97,7 @@ actor MetaFetcher: JobFetcherProtocol {
     private func fetchJobsPage(
         query: String,
         offices: [String],
+        isRemoteOnly: Bool,
         tokens: PageTokens,
         trackingData: [String: Date],
         currentDate: Date
@@ -113,7 +130,7 @@ actor MetaFetcher: JobFetcherProtocol {
             "sub_teams": [],
             "teams": [],
             "is_leadership": false,
-            "is_remote_only": false,
+            "is_remote_only": isRemoteOnly,
             "sort_by_new": true,
             "results_per_page": NSNull()
         ]

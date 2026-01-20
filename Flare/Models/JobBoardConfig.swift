@@ -8,6 +8,28 @@
 
 import Foundation
 
+enum ParsingMethod: String, Codable {
+    case directATS = "Direct ATS"
+    case apiDiscovery = "API Discovery"
+    case schemaOrg = "Schema.org"
+    case embeddedJSON = "Embedded JSON"
+    case llmExtraction = "AI Parsing"
+    case htmlPatterns = "HTML Patterns"
+    case unknown = "Unknown"
+
+    var icon: String {
+        switch self {
+        case .directATS: return "link.circle.fill"
+        case .apiDiscovery: return "antenna.radiowaves.left.and.right"
+        case .schemaOrg: return "doc.text.fill"
+        case .embeddedJSON: return "curlybraces"
+        case .llmExtraction: return "cpu"
+        case .htmlPatterns: return "text.magnifyingglass"
+        case .unknown: return "questionmark.circle"
+        }
+    }
+}
+
 struct JobBoardConfig: Identifiable, Codable {
     var id = UUID()
     var name: String
@@ -15,11 +37,10 @@ struct JobBoardConfig: Identifiable, Codable {
     var source: JobSource
     var isEnabled: Bool = true
     var lastFetched: Date?
-    /// Discovered ATS URL (e.g., Workday URL found via GTM scanning)
-    /// Used to skip re-detection on refresh
     var detectedATSURL: String?
-    /// The ATS type of the detected URL (workday, greenhouse, etc.)
     var detectedATSType: String?
+    var parsingMethod: ParsingMethod?
+    var lastJobCount: Int?
 
     var displayName: String {
         if name.isEmpty {
@@ -32,14 +53,25 @@ struct JobBoardConfig: Identifiable, Codable {
         return source.isSupported
     }
 
-    /// The effective URL to use for fetching jobs
-    /// Returns detectedATSURL if available, otherwise the original URL
     var effectiveURL: String {
         return detectedATSURL ?? url
     }
 
-    init?(name: String, url: String, isEnabled: Bool = true, detectedATSURL: String? = nil, detectedATSType: String? = nil) {
-        // Detect source from URL, or use .unknown for custom sites
+    var queryURL: String {
+        detectedATSURL ?? url
+    }
+
+    var parsingMethodDisplay: String {
+        if let method = parsingMethod {
+            return method.rawValue
+        }
+        if detectedATSType != nil {
+            return "Direct ATS"
+        }
+        return "Not tested"
+    }
+
+    init?(name: String, url: String, isEnabled: Bool = true, detectedATSURL: String? = nil, detectedATSType: String? = nil, parsingMethod: ParsingMethod? = nil) {
         let detectedSource = JobSource.detectFromURL(url) ?? .unknown
 
         self.name = name
@@ -48,6 +80,7 @@ struct JobBoardConfig: Identifiable, Codable {
         self.isEnabled = isEnabled
         self.detectedATSURL = detectedATSURL
         self.detectedATSType = detectedATSType
+        self.parsingMethod = parsingMethod
     }
 
     init(from decoder: Decoder) throws {
@@ -60,5 +93,7 @@ struct JobBoardConfig: Identifiable, Codable {
         lastFetched = try container.decodeIfPresent(Date.self, forKey: .lastFetched)
         detectedATSURL = try container.decodeIfPresent(String.self, forKey: .detectedATSURL)
         detectedATSType = try container.decodeIfPresent(String.self, forKey: .detectedATSType)
+        parsingMethod = try container.decodeIfPresent(ParsingMethod.self, forKey: .parsingMethod)
+        lastJobCount = try container.decodeIfPresent(Int.self, forKey: .lastJobCount)
     }
 }

@@ -74,24 +74,20 @@ actor LLMParser {
 
         let truncatedJSON = smartTruncateJSON(json, maxChars: 3500)
         let promptText = """
-        Analyze this JSON API response and tell me how to extract job listings.
+        Find where job listings are in this JSON.
 
-        Return ONLY a JSON object with this exact structure:
-        {
-          "jobsArrayPath": "path.to.jobs.array",
-          "titleField": "fieldName",
-          "locationField": "fieldName",
-          "urlField": "fieldName",
-          "paginationParam": "offset|page|cursor|null",
-          "pageSizeParam": "limit|size|pageSize|null"
-        }
+        Return this exact JSON format:
+        {"jobsArrayPath":"path.to.array","titleField":"title","locationField":"location","urlField":"url","paginationParam":null,"pageSizeParam":null}
 
-        For example, if jobs are at data.results[] with offset pagination:
-        {"jobsArrayPath":"data.results","titleField":"title","locationField":"location","urlField":"jobUrl","paginationParam":"offset","pageSizeParam":"limit"}
+        Field rules:
+        - jobsArrayPath: Dot-separated path to the jobs array (e.g., "data.jobs" or just "jobs")
+        - titleField: Field name containing job title (usually "title", "text", "name")
+        - locationField: Field with location (or "location" if nested object)
+        - urlField: Field with job URL (check "url", "link", "href", "applyUrl")
+        - paginationParam: "offset", "page", "cursor", or null
+        - pageSizeParam: "limit", "size", "pageSize", or null
 
-        If no pagination info found, use null for pagination fields.
-
-        JSON Response:
+        JSON:
         \(truncatedJSON)
 
         Schema:
@@ -99,7 +95,7 @@ actor LLMParser {
 
         let prompt = Prompt(
             type: .llama3,
-            systemPrompt: "You are an expert at analyzing JSON API structures.",
+            systemPrompt: "You analyze JSON APIs and return extraction schemas. No explanations.",
             userMessage: promptText
         )
 
@@ -138,8 +134,6 @@ actor LLMParser {
         let confidence: String        // high, medium, low
     }
 
-    /// Use LLM to detect ATS URLs and API endpoints in HTML/JS content
-    /// This catches patterns that regex might miss (e.g., obfuscated URLs, context-based detection)
     func detectPatternsInContent(_ content: String, sourceURL: URL) async throws -> PatternDetectionResult? {
         if !isLoaded {
             try await loadModel()
@@ -152,31 +146,33 @@ actor LLMParser {
         print("[LLM] Detecting ATS/API patterns in content...")
         let startTime = Date()
 
+        // Strip irrelevant HTML elements first
+        let strippedContent = HTMLCleaner.stripForLLM(content)
+        print("[LLM] Stripped content from \(content.count) to \(strippedContent.count) chars for pattern detection")
+
         // Truncate content intelligently
-        let truncatedContent = smartTruncateHTML(content, maxChars: 3500)
+        let truncatedContent = smartTruncateHTML(strippedContent, maxChars: 3500)
 
         let promptText = """
-        Analyze this webpage content and find job board system URLs or API endpoints.
+        Find job board URLs or API endpoints in this content.
 
-        Look for:
-        1. ATS (Applicant Tracking System) URLs like:
-           - Workday: *.myworkdayjobs.com/*
-           - Greenhouse: boards.greenhouse.io/* or api.greenhouse.io/*
-           - Lever: jobs.lever.co/*
-           - Ashby: jobs.ashbyhq.com/*
+        Look for these ATS patterns:
+        - Workday: *.myworkdayjobs.com
+        - Greenhouse: boards.greenhouse.io or api.greenhouse.io
+        - Lever: jobs.lever.co
+        - Ashby: jobs.ashbyhq.com
 
-        2. Job API endpoints like:
-           - GraphQL endpoints with job queries
-           - REST APIs returning job data (/api/jobs, /careers/api, etc.)
+        And API endpoints like /api/jobs, /careers/api, or /graphql
 
-        Return ONLY a JSON object (no explanation):
-        {
-          "atsURL": "full URL if found or null",
-          "atsType": "workday|greenhouse|lever|ashby|null",
-          "apiEndpoint": "full API URL if found or null",
-          "apiType": "graphql|rest|null",
-          "confidence": "high|medium|low"
-        }
+        Return this exact JSON format:
+        {"atsURL":null,"atsType":null,"apiEndpoint":null,"apiType":null,"confidence":"low"}
+
+        Field values:
+        - atsURL: Full ATS URL found, or null
+        - atsType: "workday", "greenhouse", "lever", "ashby", or null
+        - apiEndpoint: Full API URL found, or null
+        - apiType: "graphql" or "rest", or null
+        - confidence: "high", "medium", or "low"
 
         Content from \(sourceURL.host ?? "unknown"):
         \(truncatedContent)
@@ -186,7 +182,7 @@ actor LLMParser {
 
         let prompt = Prompt(
             type: .llama3,
-            systemPrompt: "You are an expert at identifying job board systems and APIs in webpage source code.",
+            systemPrompt: "You find job board URLs and APIs in HTML. Return JSON only.",
             userMessage: promptText
         )
 
@@ -243,29 +239,35 @@ actor LLMParser {
         print("[LLM] Extracting jobs from HTML")
         let startTime = Date()
 
+        // Strip irrelevant HTML elements first (nav, header, footer, scripts, etc.)
+        let strippedHTML = HTMLCleaner.stripForLLM(html)
+        print("[LLM] Stripped HTML from \(html.count) to \(strippedHTML.count) chars")
+
         // Truncate HTML intelligently - look for job-related content
-        let truncatedHTML = smartTruncateHTML(html, maxChars: 3500)
+        let truncatedHTML = smartTruncateHTML(strippedHTML, maxChars: 3500)
 
         let promptText = """
-        Extract job listings from this HTML page.
+        Extract job listings from this HTML.
 
-        CRITICAL: Return ONLY a JSON array, nothing else. No explanations, no markdown.
+        Return ONLY a JSON array with this structure:
+        [{"title":"Job Title","location":"City, State","url":"/jobs/123"}]
+
+        Rules:
+        - title: Required. The job title text.
+        - location: City/state if shown, or "Remote" if remote job.
+        - url: The href from the job link. Keep relative URLs as-is.
+
+        If no jobs found, return: []
 
         HTML:
         \(truncatedHTML)
-
-        If you find jobs, return this format with real data:
-        [{"title":"Software Engineer","location":"Seattle, WA","url":"https://example.com/job/123"}]
-
-        If NO jobs found in the HTML, return:
-        []
 
         JSON:
         """
 
         let prompt = Prompt(
             type: .llama3,
-            systemPrompt: "You are a helpful assistant that extracts job listings from HTML.",
+            systemPrompt: "You extract job listings from HTML and return JSON. No explanations.",
             userMessage: promptText
         )
 
@@ -449,8 +451,6 @@ actor LLMParser {
                         searchIndex = truncated.index(after: searchIndex)
 
                         if braceCount == 0 {
-                            // We found a complete object, now properly close the JSON
-                            // Count how many brackets we need to close from the start
                             let prefix = String(json[..<arrayStart.lowerBound])
                             let openBraces = prefix.filter { $0 == "{" }.count - prefix.filter { $0 == "}" }.count
 

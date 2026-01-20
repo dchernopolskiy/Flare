@@ -11,6 +11,126 @@ import Foundation
 import Combine
 import UserNotifications
 import AppKit
+import os.log
+
+// MARK: - Filter String Parsing
+extension String {
+    func parseAsFilterKeywords() -> [String] {
+        guard !isEmpty else { return [] }
+        return split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+extension Array where Element == String {
+    func includingRemote() -> [String] {
+        let remoteKeywords = ["remote", "work from home", "distributed", "anywhere"]
+        let hasRemoteKeyword = contains { keyword in
+            remoteKeywords.contains { remote in
+                keyword.localizedCaseInsensitiveContains(remote)
+            }
+        }
+        return hasRemoteKeyword ? self : self + ["remote"]
+    }
+}
+
+// MARK: - Job Filtering
+extension Array where Element == Job {
+    func filtered(titleFilter: String = "", locationFilter: String = "") -> [Job] {
+        var result = self
+
+        if !titleFilter.isEmpty {
+            let keywords = titleFilter.lowercased().components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            result = result.filter { job in
+                let title = job.title.lowercased()
+                return keywords.contains { title.contains($0) }
+            }
+        }
+
+        if !locationFilter.isEmpty {
+            let keywords = locationFilter.lowercased().components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            result = result.filter { job in
+                let location = job.location.lowercased()
+                return keywords.contains { location.contains($0) }
+            }
+        }
+
+        return result
+    }
+
+    func merging(_ other: [Job]) -> [Job] {
+        let existingIds = Set(map { $0.id })
+        let newJobs = other.filter { !existingIds.contains($0.id) }
+        return self + newJobs
+    }
+
+    func applying(titleKeywords: [String], locationKeywords: [String]) -> [Job] {
+        var result = self
+
+        if !titleKeywords.isEmpty {
+            let keywords = titleKeywords.filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                result = result.filter { job in
+                    keywords.contains { keyword in
+                        job.title.localizedCaseInsensitiveContains(keyword) ||
+                        job.department?.localizedCaseInsensitiveContains(keyword) ?? false ||
+                        job.category?.localizedCaseInsensitiveContains(keyword) ?? false
+                    }
+                }
+            }
+        }
+
+        if !locationKeywords.isEmpty {
+            let keywords = locationKeywords.filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                result = result.filter { job in
+                    keywords.contains { keyword in
+                        job.location.localizedCaseInsensitiveContains(keyword)
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+}
+
+// MARK: - Work Flexibility Extraction
+enum WorkFlexibility {
+    private static let keywords = ["remote", "hybrid", "flexible", "work from home", "onsite", "on-site", "in-office"]
+
+    static func extract(from text: String) -> String? {
+        let lowercased = text.lowercased()
+        for keyword in keywords {
+            if lowercased.contains(keyword) {
+                return keyword.capitalized
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - Fetcher Logging
+enum FetcherLog {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.flare", category: "Fetcher")
+
+    static func info(_ source: String, _ message: String) {
+        logger.info("[\(source)] \(message)")
+    }
+
+    static func debug(_ source: String, _ message: String) {
+        logger.debug("[\(source)] \(message)")
+    }
+
+    static func error(_ source: String, _ message: String) {
+        logger.error("[\(source)] \(message)")
+    }
+
+    static func warning(_ source: String, _ message: String) {
+        logger.warning("[\(source)] \(message)")
+    }
+}
 
 struct Job: Identifiable, Codable, Equatable {
     let id: String
@@ -83,29 +203,7 @@ struct Job: Identifiable, Codable, Equatable {
     }
     
     var applyButtonText: String {
-        switch source {
-        case .microsoft:
-            return "Apply on Microsoft Careers"
-        case .apple:
-            return "Apply on Apple Careers"
-        case .tiktok:
-            return "Apply on Life at TikTok"
-        case .greenhouse, .workable, .jobvite, .lever, .bamboohr,
-             .smartrecruiters, .ashby, .jazzhr, .recruitee, .breezyhr, .workday:
-            return "Apply on Company Website"
-        case .snap:
-            return "Apply on Snap Careers"
-        case .meta:
-            return "Apply on Meta Careers"
-        case .amd:
-            return "Apply on AMD Careers"
-        case .google:
-            return "Apply on Google Careers"
-        case .amazon:
-            return "Apply on Amazon Jobs"
-        case .unknown:
-            return "Apply on the Company Website"
-        }
+        source.applyButtonText
     }
 }
 
@@ -181,7 +279,32 @@ enum JobSource: String, Codable, CaseIterable {
         case .unknown: return .orange
         }
     }
-    
+
+    private static let applyButtonLabels: [JobSource: String] = [
+        .microsoft: "Apply on Microsoft Careers",
+        .apple: "Apply on Apple Careers",
+        .tiktok: "Apply on Life at TikTok",
+        .snap: "Apply on Snap Careers",
+        .meta: "Apply on Meta Careers",
+        .amd: "Apply on AMD Careers",
+        .google: "Apply on Google Careers",
+        .amazon: "Apply on Amazon Jobs"
+    ]
+
+    var applyButtonText: String {
+        Self.applyButtonLabels[self] ?? "Apply on Company Website"
+    }
+
+    var isSupported: Bool {
+        switch self {
+        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse,
+             .ashby, .lever, .snap, .amd, .meta, .workday, .unknown:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func detectFromURL(_ urlString: String) -> JobSource? {
         let lowercased = urlString.lowercased()
 
@@ -232,9 +355,52 @@ enum JobSource: String, Codable, CaseIterable {
 
 // MARK: - Helper Classes
 class HTMLCleaner {
+    static func stripForLLM(_ html: String) -> String {
+        var result = html
+
+        let elementsToRemove = [
+            "head", "script", "style", "nav", "header", "footer",
+            "aside", "iframe", "noscript", "svg", "form", "button",
+            "input", "select", "textarea", "canvas", "video", "audio"
+        ]
+
+        for element in elementsToRemove {
+            let pattern = "<\(element)[^>]*>[\\s\\S]*?</\(element)>"
+            result = result.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+            let selfClosingPattern = "<\(element)[^>]*/>"
+            result = result.replacingOccurrences(of: selfClosingPattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+            let openingOnlyPattern = "<\(element)[^>]*>"
+            result = result.replacingOccurrences(of: openingOnlyPattern, with: "", options: [.regularExpression, .caseInsensitive])
+        }
+
+        let attributePatterns = [
+            #"\s+class="[^"]*""#,
+            #"\s+class='[^']*'"#,
+            #"\s+style="[^"]*""#,
+            #"\s+style='[^']*'"#,
+            #"\s+data-[a-z0-9-]+="[^"]*""#,
+            #"\s+data-[a-z0-9-]+'[^']*'"#,
+            #"\s+aria-[a-z]+="[^"]*""#,
+            #"\s+role="[^"]*""#,
+            #"\s+onclick="[^"]*""#,
+            #"\s+onload="[^"]*""#,
+            #"\s+onerror="[^"]*""#
+        ]
+
+        for pattern in attributePatterns {
+            result = result.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+        }
+
+        result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func cleanHTML(_ html: String) -> String {
         let htmlDecoded = decodeHTMLEntities(html)
-        
+
         var text = htmlDecoded
             .replacingOccurrences(of: "<br>", with: "\n")
             .replacingOccurrences(of: "<br/>", with: "\n")
@@ -249,15 +415,15 @@ class HTMLCleaner {
             .replacingOccurrences(of: "</ul>", with: "\n")
             .replacingOccurrences(of: "<ol>", with: "\n")
             .replacingOccurrences(of: "</ol>", with: "\n")
-        
+
         text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        
+
         let lines = text.components(separatedBy: .newlines)
         let cleanedLines = lines.map { $0.trimmingCharacters(in: .whitespaces) }
-        
+
         var result: [String] = []
         var previousWasEmpty = false
-        
+
         for line in cleanedLines {
             if line.isEmpty {
                 if !previousWasEmpty && !result.isEmpty {
@@ -269,13 +435,13 @@ class HTMLCleaner {
                 previousWasEmpty = false
             }
         }
-        
+
         return result.joined(separator: "\n")
     }
-    
+
     private static func decodeHTMLEntities(_ html: String) -> String {
         guard let data = html.data(using: .utf8) else { return html }
-        
+
         do {
             let attributedString = try NSAttributedString(
                 data: data,
@@ -290,7 +456,7 @@ class HTMLCleaner {
             return manualDecodeHTMLEntities(html)
         }
     }
-    
+
     private static func manualDecodeHTMLEntities(_ text: String) -> String {
         return text
             .replacingOccurrences(of: "&amp;", with: "&")
@@ -361,13 +527,3 @@ class QualificationExtractor {
     }
 }
 
-extension JobSource {
-    var isSupported: Bool {
-        switch self {
-        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse, .ashby, .lever, .snap, .amd, .meta, .workday, .unknown:
-            return true
-        default:
-            return false
-        }
-    }
-}

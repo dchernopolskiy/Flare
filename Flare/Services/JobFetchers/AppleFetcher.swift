@@ -20,11 +20,12 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
 
         let jobs = try await fetchAllJobs(trackingData: trackingData, currentDate: currentDate, maxPages: maxPages, titleKeywords: titleKeywords, location: location)
 
-        let filteredJobs = applyFilters(jobs: jobs, titleKeywords: titleKeywords, location: location)
+        let locationKeywords = location.parseAsFilterKeywords()
+        let filteredJobs = jobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
 
         await trackingService.saveTrackingData(filteredJobs, for: "apple", currentDate: currentDate, retentionDays: 30)
 
-        print("[Apple] Fetched \(jobs.count) total jobs, \(filteredJobs.count) after filtering")
+        FetcherLog.info("Apple", "Fetched \(jobs.count) total, \(filteredJobs.count) after filtering")
         return filteredJobs
     }
 
@@ -51,7 +52,6 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             throw FetchError.decodingError(details: "Failed to decode CSRF token")
         }
 
-        // Cache the token for 10 minutes
         cachedCSRFToken = tokenString
         csrfTokenExpiry = Date().addingTimeInterval(600)
 
@@ -125,7 +125,7 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-        print("[Apple] Fetching page \(page) with query '\(query)' and locations \(locationFilter)")
+        FetcherLog.debug("Apple", "Fetching page \(page)")
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -134,35 +134,21 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         }
 
         guard httpResponse.statusCode == 200 else {
-            if let errorString = String(data: data, encoding: .utf8) {
-                print("[Apple] Error response: \(errorString.prefix(500))")
-            }
+            FetcherLog.error("Apple", "HTTP \(httpResponse.statusCode)")
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
 
         let decoded: AppleResponse
         do {
             decoded = try JSONDecoder().decode(AppleResponse.self, from: data)
-        } catch let DecodingError.keyNotFound(key, context) {
-            print("[Apple] Missing key '\(key.stringValue)' at: \(context.codingPath.map { $0.stringValue }.joined(separator: " -> "))")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("[Apple] Response preview: \(responseString.prefix(500))")
-            }
-            throw FetchError.decodingError(details: "Missing field '\(key.stringValue)' in Apple response")
         } catch {
-            print("[Apple] Decoding error: \(error)")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("[Apple] Response preview: \(responseString.prefix(500))")
-            }
+            FetcherLog.error("Apple", "Decoding error: \(error.localizedDescription)")
             throw FetchError.decodingError(details: "Failed to decode Apple response: \(error.localizedDescription)")
         }
 
         let jobs = decoded.res.searchResults.compactMap { appleJob -> Job? in
             let title = appleJob.postingTitle
-            guard !title.isEmpty else {
-                print("[Apple] Skipping job: empty title")
-                return nil
-            }
+            guard !title.isEmpty else { return nil }
 
             let locationString = buildLocationString(from: appleJob)
 
@@ -222,58 +208,8 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         return components.isEmpty ? "Location not specified" : components.joined(separator: ", ")
     }
 
-    private func applyFilters(jobs: [Job], titleKeywords: [String], location: String) -> [Job] {
-        var filteredJobs = jobs
-
-        if !titleKeywords.isEmpty {
-            let keywords = titleKeywords.filter { !$0.isEmpty }
-            if !keywords.isEmpty {
-                filteredJobs = filteredJobs.filter { job in
-                    keywords.contains { keyword in
-                        job.title.localizedCaseInsensitiveContains(keyword) ||
-                        job.department?.localizedCaseInsensitiveContains(keyword) ?? false ||
-                        job.category?.localizedCaseInsensitiveContains(keyword) ?? false
-                    }
-                }
-            }
-        }
-
-        if !location.isEmpty {
-            let locationKeywords = parseLocationString(location)
-            if !locationKeywords.isEmpty {
-                filteredJobs = filteredJobs.filter { job in
-                    locationKeywords.contains { keyword in
-                        job.location.localizedCaseInsensitiveContains(keyword)
-                    }
-                }
-            }
-        }
-
-        return filteredJobs
-    }
-
-    private func parseLocationString(_ locationString: String) -> [String] {
-        guard !locationString.isEmpty else { return [] }
-
-        var keywords = locationString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        if keywords.contains(where: { $0.localizedCaseInsensitiveContains("remote") }) {
-            if !keywords.contains("remote") {
-                keywords.append("remote")
-            }
-            if !keywords.contains("Remote") {
-                keywords.append("Remote")
-            }
-        }
-
-        return keywords
-    }
-
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
-        let titleKeywords = parseFilterString(titleFilter)
+        let titleKeywords = titleFilter.parseAsFilterKeywords()
 
         let trackingData = await trackingService.loadTrackingData(for: "apple")
         let currentDate = Date()
@@ -286,20 +222,12 @@ actor AppleFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             location: locationFilter
         )
 
-        let filteredJobs = applyFilters(jobs: jobs, titleKeywords: titleKeywords, location: locationFilter)
+        let locationKeywords = locationFilter.parseAsFilterKeywords()
+        let filteredJobs = jobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
 
         await trackingService.saveTrackingData(filteredJobs, for: "apple", currentDate: currentDate, retentionDays: 30)
 
         return filteredJobs
-    }
-
-    private func parseFilterString(_ filterString: String) -> [String] {
-        guard !filterString.isEmpty else { return [] }
-
-        return filterString
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
     }
 }
 

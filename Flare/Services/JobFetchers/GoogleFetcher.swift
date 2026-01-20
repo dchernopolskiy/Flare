@@ -14,6 +14,41 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let trackingData = await trackingService.loadTrackingData(for: "google")
         let currentDate = Date()
+
+        // Fetch jobs with regular location filter
+        var allJobs = try await fetchJobsWithLocation(
+            url: url,
+            titleFilter: titleFilter,
+            locationFilter: locationFilter,
+            trackingData: trackingData,
+            currentDate: currentDate
+        )
+
+        // Also fetch remote jobs unless user already specified remote
+        if !locationFilter.lowercased().contains("remote") {
+            let remoteJobs = try await fetchJobsWithLocation(
+                url: url,
+                titleFilter: titleFilter,
+                locationFilter: "Remote",
+                trackingData: trackingData,
+                currentDate: currentDate
+            )
+
+            allJobs = allJobs.merging(remoteJobs)
+        }
+
+        await trackingService.saveTrackingData(allJobs, for: "google", currentDate: currentDate, retentionDays: 30)
+        FetcherLog.info("Google", "Fetched \(allJobs.count) total jobs")
+        return allJobs
+    }
+
+    private func fetchJobsWithLocation(
+        url: URL,
+        titleFilter: String,
+        locationFilter: String,
+        trackingData: [String: Date],
+        currentDate: Date
+    ) async throws -> [Job] {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents(string: baseURL)!
 
         if !titleFilter.isEmpty {
@@ -39,8 +74,6 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
 
-        print("[Google] Fetching from: \(finalURL)")
-
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -48,7 +81,7 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         }
 
         guard httpResponse.statusCode == 200 else {
-            print("[Google] HTTP error: \(httpResponse.statusCode)")
+            FetcherLog.error("Google", "HTTP \(httpResponse.statusCode)")
             throw FetchError.httpError(statusCode: httpResponse.statusCode)
         }
 
@@ -61,31 +94,21 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
 
         // Fallback to HTML parsing if JSON extraction fails
         if jobs.isEmpty {
-            print("[Google] JSON extraction failed, falling back to HTML parsing")
+            FetcherLog.debug("Google", "JSON extraction failed, falling back to HTML parsing")
             jobs = parseHTML(html, baseURL: url, trackingData: trackingData, currentDate: currentDate)
         }
-
-        await trackingService.saveTrackingData(jobs, for: "google", currentDate: currentDate, retentionDays: 30)
-
-        print("[Google] Fetched \(jobs.count) jobs")
         return jobs
     }
 
     // MARK: - Embedded JSON Parsing
 
-    /// Parse jobs from the embedded JSON data structure in Google's career pages
-    /// The data is in format: data: [[[jobId, title, url, ...], ...], null, count, pageSize]
     private func parseEmbeddedJSON(_ html: String, trackingData: [String: Date], currentDate: Date) -> [Job] {
         var jobs: [Job] = []
 
-        // Look for the data array pattern - it starts after "data:" and contains job arrays
-        // Pattern: data: [[["jobId", "title", "url", ...], ...
         guard let dataStart = html.range(of: "data: [[") else {
-            print("[Google] No embedded data array found")
             return []
         }
 
-        // Find the end of the data array by counting brackets
         let searchStart = dataStart.lowerBound
         var depth = 0
         var inString = false
@@ -128,7 +151,6 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         }
 
         guard let endIndex = dataEnd else {
-            print("[Google] Could not find end of data array")
             return []
         }
 
@@ -146,11 +168,8 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         guard let jsonData = unescapedJSON.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [Any],
               let jobsArray = parsed.first as? [[Any]] else {
-            print("[Google] Failed to parse embedded JSON")
             return []
         }
-
-        print("[Google] Found \(jobsArray.count) jobs in embedded JSON")
 
         for jobArray in jobsArray {
             guard jobArray.count >= 8 else { continue }
@@ -158,8 +177,18 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             // Structure: [jobId, title, url, [responsibilities], [qualifications], company, locale, [locations], ...]
             guard let jobId = jobArray[0] as? String,
                   let title = jobArray[1] as? String,
-                  let url = jobArray[2] as? String else {
+                  let rawURL = jobArray[2] as? String else {
                 continue
+            }
+
+            // Build full URL from relative path
+            let url: String
+            if rawURL.hasPrefix("http") {
+                url = rawURL
+            } else if rawURL.hasPrefix("/") {
+                url = "https://www.google.com\(rawURL)"
+            } else {
+                url = "https://www.google.com/about/careers/applications/\(rawURL)"
             }
 
             // Extract location from the locations array (index 7)
@@ -230,14 +259,7 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
     }
 
     private func stripHTML(_ html: String) -> String {
-        return html
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        HTMLCleaner.cleanHTML(html)
     }
 
     // MARK: - HTML Parsing (Fallback)
@@ -249,7 +271,6 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         let jobPattern = #"<li class="lLd3Je" ssk='[^']*'>.*?</li>"#
 
         guard let jobRegex = try? NSRegularExpression(pattern: jobPattern, options: [.dotMatchesLineSeparators]) else {
-            print("[Google] Failed to create job regex")
             return []
         }
 
@@ -365,12 +386,7 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         if let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
            match.numberOfRanges > 1,
            let range = Range(match.range(at: 1), in: html) {
-            return String(html[range])
-                .replacingOccurrences(of: "&amp;", with: "&")
-                .replacingOccurrences(of: "&lt;", with: "<")
-                .replacingOccurrences(of: "&gt;", with: ">")
-                .replacingOccurrences(of: "&quot;", with: "\"")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return HTMLCleaner.cleanHTML(String(html[range]))
         }
 
         return nil

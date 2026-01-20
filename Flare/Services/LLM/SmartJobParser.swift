@@ -58,9 +58,6 @@ actor DetectedATSCache {
     }
 }
 
-/// Smart job parser that tries multiple strategies in order:
-/// 1. API/ATS detection (UniversalJobFetcher - for known platforms like Greenhouse, Lever, etc.)
-/// 2. LLM parsing with schema caching (for custom career sites)
 actor SmartJobParser {
     private let universalFetcher = UniversalJobFetcher()
     private let llmParser = LLMParser.shared
@@ -69,54 +66,46 @@ actor SmartJobParser {
     private let cachedFetcher = CachedSchemaFetcher()
     private let detectedATSCache = DetectedATSCache.shared
 
-    /// Parse jobs from a URL using the best available method
-    /// - Parameters:
-    ///   - url: URL to parse jobs from
-    ///   - titleFilter: Optional job title filter
-    ///   - locationFilter: Optional location filter
-    ///   - statusCallback: Optional callback for status updates (called on MainActor)
     func parseJobs(from url: URL, titleFilter: String = "", locationFilter: String = "", statusCallback: (@Sendable (String) -> Void)? = nil) async -> [Job] {
-        // Auto-upgrade HTTP to HTTPS to comply with App Transport Security
-        var secureURL = url
-        if let scheme = url.scheme?.lowercased(), scheme == "http" {
-            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            components?.scheme = "https"
-            if let httpsURL = components?.url {
-                secureURL = httpsURL
-                print("[SmartParser] Auto-upgraded HTTP to HTTPS: \(secureURL.absoluteString)")
-            }
-        }
-
+        let secureURL = upgradeToHTTPS(url)
         print("[SmartParser] Parsing jobs from: \(secureURL.absoluteString)")
-        await updateStatus("🔍 Analyzing website...", callback: statusCallback)
+        await updateStatus("Analyzing website...", callback: statusCallback)
 
-        // Step 1: Try API/ATS detection first (for known platforms)
+        // Try API/ATS detection first
         do {
-            await updateStatus("⚡ Trying API/ATS detection...", callback: statusCallback)
+            await updateStatus("Trying API/ATS detection...", callback: statusCallback)
             let jobs = try await universalFetcher.fetchJobs(from: secureURL, titleFilter: titleFilter, locationFilter: locationFilter)
             if !jobs.isEmpty {
                 print("[SmartParser] Success via API/ATS detection: \(jobs.count) jobs")
-                await updateStatus("✅ Found \(jobs.count) jobs via API/ATS", callback: statusCallback)
+                await updateStatus("Found \(jobs.count) jobs via API/ATS", callback: statusCallback)
                 return jobs
             }
         } catch {
             print("[SmartParser] API/ATS detection failed: \(error.localizedDescription)")
-            await updateStatus("❌ API/ATS detection failed", callback: statusCallback)
         }
 
-        // Step 2: Fall back to LLM if enabled
+        // Fall back to LLM if enabled
         let aiParsingEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
-        print("[SmartParser] AI parsing enabled: \(aiParsingEnabled)")
-
         if aiParsingEnabled {
             print("[SmartParser] Falling back to LLM parsing...")
-            await updateStatus("🤖 Using AI to analyze site...", callback: statusCallback)
+            await updateStatus("Using AI to analyze site...", callback: statusCallback)
             return await parseWithLLM(url: secureURL, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback)
         }
 
-        print("[SmartParser] All parsing methods exhausted, returning empty")
-        await updateStatus("❌ Unable to parse - enable AI parsing in Settings", callback: statusCallback)
+        print("[SmartParser] All parsing methods exhausted")
+        await updateStatus("Unable to parse - enable AI parsing in Settings", callback: statusCallback)
         return []
+    }
+
+    private func upgradeToHTTPS(_ url: URL) -> URL {
+        guard url.scheme?.lowercased() == "http" else { return url }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.scheme = "https"
+        if let httpsURL = components?.url {
+            print("[SmartParser] Auto-upgraded HTTP to HTTPS: \(httpsURL.absoluteString)")
+            return httpsURL
+        }
+        return url
     }
 
     /// Helper to update status on MainActor
@@ -136,7 +125,7 @@ actor SmartJobParser {
             }
 
             print("[SmartParser] WebKit approach failed, scanning scripts for patterns...")
-            await updateStatus("🔍 Scanning page for job board patterns...", callback: statusCallback)
+            await updateStatus("Scanning page for job board patterns...", callback: statusCallback)
 
             let html = try await fetchHTML(from: url)
             let scanResult = scanScriptsForPatterns(in: html)
@@ -144,7 +133,7 @@ actor SmartJobParser {
             if let firstATSURL = scanResult.atsURLs.first,
                let atsType = scanResult.atsType {
                 print("[SmartParser] Regex found ATS: \(atsType) at \(firstATSURL)")
-                await updateStatus("🎯 Found \(atsType.capitalized) ATS: \(firstATSURL)", callback: statusCallback)
+                await updateStatus("Found \(atsType.capitalized) ATS: \(firstATSURL)", callback: statusCallback)
 
                 if let detectedURL = URL(string: firstATSURL) {
                     let jobs = try await fetchFromDetectedATS(
@@ -181,14 +170,14 @@ actor SmartJobParser {
                     let jobs = parsedJobs.compactMap { convertToJob($0, url: url) }
                     let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
                     if !filteredJobs.isEmpty {
-                        await updateStatus("✅ Found \(filteredJobs.count) jobs in embedded JSON", callback: statusCallback)
+                        await updateStatus("Found \(filteredJobs.count) jobs in embedded JSON", callback: statusCallback)
                         return filteredJobs
                     }
                 }
             }
 
             print("[SmartParser] Regex scan found nothing, trying LLM pattern detection...")
-            await updateStatus("🤖 AI analyzing page for hidden patterns...", callback: statusCallback)
+            await updateStatus("AI analyzing page for hidden patterns...", callback: statusCallback)
 
             if let patternResult = try await llmParser.detectPatternsInContent(html, sourceURL: url) {
                 if let atsURL = patternResult.atsURL,
@@ -196,7 +185,7 @@ actor SmartJobParser {
                    atsType != "null",
                    patternResult.confidence != "low" {
                     print("[SmartParser] LLM detected ATS: \(atsType) at \(atsURL)")
-                    await updateStatus("🎯 AI found \(atsType.capitalized) ATS: \(atsURL)", callback: statusCallback)
+                    await updateStatus("AI found \(atsType.capitalized) ATS: \(atsURL)", callback: statusCallback)
 
                     if let detectedURL = URL(string: atsURL) {
                         let jobs = try await fetchFromDetectedATS(
@@ -217,7 +206,7 @@ actor SmartJobParser {
                    apiType != "null",
                    patternResult.confidence != "low" {
                     print("[SmartParser] LLM detected API: \(apiType) at \(apiEndpoint)")
-                    await updateStatus("🎯 AI found \(apiType.uppercased()) API endpoint", callback: statusCallback)
+                    await updateStatus("AI found \(apiType.uppercased()) API endpoint", callback: statusCallback)
 
                     if let jobs = await tryDetectedAPIEndpoint(
                         endpoint: apiEndpoint,
@@ -233,54 +222,47 @@ actor SmartJobParser {
             }
 
             print("[SmartParser] No patterns found, attempting direct HTML parsing...")
-            await updateStatus("📄 Analyzing HTML content with AI...", callback: statusCallback)
+            await updateStatus("Analyzing HTML content with AI...", callback: statusCallback)
             let parsedJobs = try await llmParser.extractJobs(from: html, url: url)
             let jobs = parsedJobs.compactMap { convertToJob($0, url: url) }
             let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
 
             if !filteredJobs.isEmpty {
-                await updateStatus("✅ Found \(filteredJobs.count) jobs via HTML parsing", callback: statusCallback)
+                await updateStatus("Found \(filteredJobs.count) jobs via HTML parsing", callback: statusCallback)
             } else {
-                await updateStatus("❌ No jobs found in HTML content", callback: statusCallback)
+                await updateStatus("No jobs found in HTML content", callback: statusCallback)
             }
 
             return filteredJobs
 
         } catch {
             print("[SmartParser] LLM parsing failed: \(error)")
-            await updateStatus("❌ AI parsing failed: \(error.localizedDescription)", callback: statusCallback)
+            await updateStatus("AI parsing failed: \(error.localizedDescription)", callback: statusCallback)
             return []
         }
     }
 
     private func fetchFromDetectedATS(url: URL, atsType: String, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async throws -> [Job] {
-        await updateStatus("⚡ Fetching from \(atsType.capitalized)...", callback: statusCallback)
+        await updateStatus("Fetching from \(atsType.capitalized)...", callback: statusCallback)
 
-        var jobs: [Job] = []
+        let jobs: [Job]
         switch atsType.lowercased() {
         case "workday":
-            let fetcher = WorkdayFetcher()
-            jobs = try await fetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+            jobs = try await WorkdayFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         case "greenhouse":
-            let fetcher = GreenhouseFetcher()
-            jobs = try await fetcher.fetchGreenhouseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+            jobs = try await GreenhouseFetcher().fetchGreenhouseJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         case "lever":
-            let fetcher = LeverFetcher()
-            jobs = try await fetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+            jobs = try await LeverFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         case "ashby":
-            let fetcher = AshbyFetcher()
-            jobs = try await fetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+            jobs = try await AshbyFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         default:
             print("[SmartParser] Unknown ATS type: \(atsType)")
-            await updateStatus("❌ Unknown ATS type: \(atsType)", callback: statusCallback)
+            await updateStatus("Unknown ATS type: \(atsType)", callback: statusCallback)
             return []
         }
 
-        if jobs.isEmpty {
-            await updateStatus("❌ No jobs found from \(atsType.capitalized)", callback: statusCallback)
-        } else {
-            await updateStatus("✅ Found \(jobs.count) jobs from \(atsType.capitalized)", callback: statusCallback)
-        }
+        let status = jobs.isEmpty ? "No jobs found" : "Found \(jobs.count) jobs"
+        await updateStatus("\(status) from \(atsType.capitalized)", callback: statusCallback)
         return jobs
     }
 
@@ -290,7 +272,7 @@ actor SmartJobParser {
             return nil
         }
 
-        await updateStatus("📡 Fetching from detected API...", callback: statusCallback)
+        await updateStatus("Fetching from detected API...", callback: statusCallback)
 
         do {
             var request = URLRequest(url: apiURL)
@@ -321,7 +303,7 @@ actor SmartJobParser {
             let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
 
             if !filteredJobs.isEmpty {
-                await updateStatus("✅ Found \(filteredJobs.count) jobs from detected API", callback: statusCallback)
+                await updateStatus("Found \(filteredJobs.count) jobs from detected API", callback: statusCallback)
                 return filteredJobs
             }
 
@@ -336,37 +318,92 @@ actor SmartJobParser {
         guard let domain = url.host else { return nil }
 
         var skipLLMAnalysis = false
+        var useDirectHTMLExtraction = false
 
         if let cachedSchema = await schemaCache.getSchema(for: domain) {
-            print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered)")
-            if cachedSchema.llmAttempted && !cachedSchema.schemaDiscovered {
+            print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered), htmlExtractionWorks: \(cachedSchema.htmlExtractionWorks)")
+
+            // Fast path: if HTML extraction previously worked, skip API detection and go straight to it
+            if cachedSchema.htmlExtractionWorks {
+                print("[SmartParser] HTML extraction previously worked for \(domain) - using fast path")
+                await updateStatus("Using cached HTML extraction for \(domain)", callback: statusCallback)
+                useDirectHTMLExtraction = true
+                skipLLMAnalysis = true
+            } else if cachedSchema.llmAttempted && !cachedSchema.schemaDiscovered {
                 let daysSinceLastAttempt = Date().timeIntervalSince(cachedSchema.lastAttempt) / (24 * 60 * 60)
 
                 if daysSinceLastAttempt < 7 {
                     print("[SmartParser] LLM previously failed for \(domain) (\(Int(daysSinceLastAttempt)) days ago) - will still try WebKit + regex scan")
-                    await updateStatus("🔍 Scanning for job board patterns...", callback: statusCallback)
+                    await updateStatus("Scanning for job board patterns...", callback: statusCallback)
                     skipLLMAnalysis = true
                 } else {
                     print("[SmartParser] LLM failed \(Int(daysSinceLastAttempt)) days ago for \(domain) - retrying now")
-                    await updateStatus("🔄 Retrying AI analysis (previous attempt was \(Int(daysSinceLastAttempt)) days ago)", callback: statusCallback)
+                    await updateStatus("Retrying AI analysis (previous attempt was \(Int(daysSinceLastAttempt)) days ago)", callback: statusCallback)
                     await schemaCache.clearSchema(for: domain)
                 }
             }
 
             if cachedSchema.schemaDiscovered {
                 print("[SmartParser] Using cached schema for \(domain)")
-                await updateStatus("⚡ Using cached schema for \(domain)", callback: statusCallback)
+                await updateStatus("Using cached schema for \(domain)", callback: statusCallback)
                 if let jobs = await fetchWithCachedSchema(cachedSchema, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
                     return jobs
                 }
                 print("[SmartParser] Cached fetch failed, will re-render with WebKit for fresh auth")
-                await updateStatus("🔄 Cached schema failed, re-analyzing...", callback: statusCallback)
+                await updateStatus("Cached schema failed, re-analyzing...", callback: statusCallback)
             }
         } else {
             print("[SmartParser] Cache miss for \(domain) - no cached schema found")
         }
 
-        await updateStatus("🌐 Checking site structure...", callback: statusCallback)
+        // Fast path: if HTML/API extraction is cached as working, render and extract directly
+        if useDirectHTMLExtraction {
+            print("[SmartParser] Fast path: WebKit render + extraction for \(domain)")
+            await updateStatus("Rendering page...", callback: statusCallback)
+
+            let renderer = await WebKitRenderer()
+            let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 8.0)
+
+            print("[SmartParser] WebKit rendered HTML length: \(result.html.count) chars")
+            print("[SmartParser] Fast path detected \(result.detectedAPICalls.count) API calls")
+
+            // First try simple API extraction on any intercepted API calls (for sites like Spotify)
+            let jobRelatedAPICalls = result.detectedAPICalls.filter { apiCall in
+                JobExtractionPatterns.isJobRelatedURL(apiCall.url) && !JobExtractionPatterns.isTrackingURL(apiCall.url)
+            }
+            let apiCallsToTry = jobRelatedAPICalls.isEmpty ? result.detectedAPICalls : jobRelatedAPICalls
+
+            for apiCall in apiCallsToTry {
+                if let jobs = await trySimpleAPIExtraction(
+                    apiCall: apiCall,
+                    baseURL: url,
+                    titleFilter: titleFilter,
+                    locationFilter: locationFilter,
+                    statusCallback: statusCallback
+                ), !jobs.isEmpty {
+                    print("[SmartParser] Fast path: extracted \(jobs.count) jobs via simple API extraction")
+                    await updateStatus("Found \(jobs.count) jobs", callback: statusCallback)
+                    await schemaCache.updateLastFetched(for: domain)
+                    return jobs
+                }
+            }
+
+            // Then try HTML extraction
+            if result.html.count > 1000 {
+                if let jobs = extractJobsFromHTML(result.html, baseURL: url, titleFilter: titleFilter, locationFilter: locationFilter), !jobs.isEmpty {
+                    print("[SmartParser] Fast path extracted \(jobs.count) jobs from HTML")
+                    await updateStatus("Found \(jobs.count) jobs", callback: statusCallback)
+                    await schemaCache.updateLastFetched(for: domain)
+                    return jobs
+                }
+            }
+
+            // Fast path failed, fall through to full analysis
+            print("[SmartParser] Fast path extraction failed, trying full analysis")
+            await updateStatus("Fast path failed, analyzing page...", callback: statusCallback)
+        }
+
+        await updateStatus("Checking site structure...", callback: statusCallback)
         let initialHTML = try await fetchHTML(from: url)
 
         // Check if we got blocked (empty or very small response likely means WAF/bot protection)
@@ -398,18 +435,18 @@ actor SmartJobParser {
 
         if likelyBlocked {
             print("[SmartParser] Likely blocked by WAF (response size: \(initialHTML.count)), trying WebKit...")
-            await updateStatus("🔒 Site appears protected, using browser rendering...", callback: statusCallback)
+            await updateStatus("Site appears protected, using browser rendering...", callback: statusCallback)
         }
 
         print("[SmartParser] Detected SPA - using WebKit with API interception...")
-        await updateStatus("🔎 Detected SPA, intercepting API calls...", callback: statusCallback)
+        await updateStatus("Detected SPA, intercepting API calls...", callback: statusCallback)
 
         let renderer = await WebKitRenderer()
         let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 8.0)
 
         print("[SmartParser] WebKit rendered HTML length: \(result.html.count) chars")
         print("[SmartParser] Detected \(result.detectedAPICalls.count) API calls")
-        await updateStatus("📡 Found \(result.detectedAPICalls.count) API calls", callback: statusCallback)
+        await updateStatus("Found \(result.detectedAPICalls.count) API calls", callback: statusCallback)
 
         var foundJobs: [Job]? = nil
 
@@ -420,7 +457,7 @@ actor SmartJobParser {
 
         for (index, apiCall) in apiCallsToTry.enumerated() {
             print("[SmartParser] Trying API endpoint: \(apiCall.url)")
-            await updateStatus("🔍 Analyzing API \(index + 1)/\(apiCallsToTry.count): \(URL(string: apiCall.url)?.host ?? "unknown")", callback: statusCallback)
+            await updateStatus("Analyzing API \(index + 1)/\(apiCallsToTry.count): \(URL(string: apiCall.url)?.host ?? "unknown")", callback: statusCallback)
 
             if skipLLMAnalysis {
                 if let jobs = await trySimpleAPIExtraction(
@@ -431,7 +468,7 @@ actor SmartJobParser {
                     statusCallback: statusCallback
                 ), !jobs.isEmpty {
                     print("[SmartParser] Successfully fetched \(jobs.count) jobs via simple extraction!")
-                    await updateStatus("✅ Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
+                    await updateStatus("Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
                     foundJobs = jobs
                     break
                 }
@@ -444,13 +481,13 @@ actor SmartJobParser {
                     statusCallback: statusCallback
                 ), !jobs.isEmpty {
                     print("[SmartParser] Successfully fetched \(jobs.count) jobs from intercepted API!")
-                    await updateStatus("✅ Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
+                    await updateStatus("Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
                     foundJobs = jobs
                     break
                 }
 
                 print("[SmartParser] LLM schema discovery failed, trying simple extraction...")
-                await updateStatus("🔄 Trying simpler extraction method...", callback: statusCallback)
+                await updateStatus("Trying simpler extraction method...", callback: statusCallback)
                 if let jobs = await trySimpleAPIExtraction(
                     apiCall: apiCall,
                     baseURL: url,
@@ -459,7 +496,9 @@ actor SmartJobParser {
                     statusCallback: statusCallback
                 ), !jobs.isEmpty {
                     print("[SmartParser] Successfully fetched \(jobs.count) jobs via simple extraction fallback!")
-                    await updateStatus("✅ Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
+                    await updateStatus("Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
+                    // Cache that simple extraction works for this domain so we skip LLM next time
+                    await schemaCache.markSimpleAPIExtractionWorks(for: domain, apiEndpoint: apiCall.url)
                     foundJobs = jobs
                     break
                 }
@@ -472,7 +511,7 @@ actor SmartJobParser {
         }
 
         print("[SmartParser] Scanning WebKit-rendered HTML for ATS patterns...")
-        await updateStatus("🔍 Scanning rendered page for job board patterns...", callback: statusCallback)
+        await updateStatus("Scanning rendered page for job board patterns...", callback: statusCallback)
 
         let renderedScanResult = scanScriptsForPatterns(in: result.html)
 
@@ -482,7 +521,7 @@ actor SmartJobParser {
             print("[SmartParser] Found ATS in rendered HTML: \(atsType)")
             print("[SmartParser] Original URL: \(firstATSURL)")
             print("[SmartParser] Base URL: \(baseATSURL)")
-            await updateStatus("🎯 Found \(atsType.capitalized) in rendered page!", callback: statusCallback)
+            await updateStatus("Found \(atsType.capitalized) in rendered page!", callback: statusCallback)
 
             await detectedATSCache.store(for: domain, atsURL: baseATSURL, atsType: atsType)
             await llmParser.unloadModel()
@@ -523,11 +562,13 @@ actor SmartJobParser {
         // Final fallback: try to extract jobs directly from WebKit-rendered HTML
         if result.html.count > 1000 {
             print("[SmartParser] Trying direct HTML extraction from rendered page...")
-            await updateStatus("📄 Extracting jobs from rendered HTML...", callback: statusCallback)
+            await updateStatus("Extracting jobs from rendered HTML...", callback: statusCallback)
 
             if let jobs = extractJobsFromHTML(result.html, baseURL: url, titleFilter: titleFilter, locationFilter: locationFilter), !jobs.isEmpty {
                 print("[SmartParser] Extracted \(jobs.count) jobs from rendered HTML")
-                await updateStatus("✅ Found \(jobs.count) jobs from rendered page", callback: statusCallback)
+                await updateStatus("Found \(jobs.count) jobs from rendered page", callback: statusCallback)
+                // Cache that HTML extraction works for this domain
+                await schemaCache.markHTMLExtractionWorks(for: domain)
                 await llmParser.unloadModel()
                 return jobs
             }
@@ -538,7 +579,7 @@ actor SmartJobParser {
         if !skipLLMAnalysis {
             await schemaCache.markLLMAttemptFailed(for: domain)
         }
-        await updateStatus("❌ No valid job API found", callback: statusCallback)
+        await updateStatus("No valid job API found", callback: statusCallback)
         return nil
     }
 
@@ -651,7 +692,7 @@ actor SmartJobParser {
         if !jobs.isEmpty {
             await schemaCache.updateLastFetched(for: schema.domain)
             print("[SmartParser] Fetched \(jobs.count) jobs using cached schema")
-            await updateStatus("✅ Found \(jobs.count) jobs using cached schema", callback: statusCallback)
+            await updateStatus("Found \(jobs.count) jobs using cached schema", callback: statusCallback)
         }
 
         return jobs.isEmpty ? nil : jobs
@@ -680,33 +721,33 @@ actor SmartJobParser {
                 }
             }
 
-            await updateStatus("📥 Fetching API response...", callback: statusCallback)
+            await updateStatus("Fetching API response...", callback: statusCallback)
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 print("[SmartParser] API request failed with status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
-                await updateStatus("❌ API request failed (status: \((response as? HTTPURLResponse)?.statusCode ?? 0))", callback: statusCallback)
+                await updateStatus("API request failed (status: \((response as? HTTPURLResponse)?.statusCode ?? 0))", callback: statusCallback)
                 return nil
             }
 
             guard let jsonString = String(data: data, encoding: .utf8) else {
-                await updateStatus("❌ Invalid JSON response", callback: statusCallback)
+                await updateStatus("Invalid JSON response", callback: statusCallback)
                 return nil
             }
 
             print("[SmartParser] API response length: \(jsonString.count) chars")
             let sizeKB = Double(jsonString.count) / 1024.0
-            await updateStatus("🤖 AI analyzing JSON (\(String(format: "%.1f", sizeKB))KB)...", callback: statusCallback)
+            await updateStatus("AI analyzing JSON (\(String(format: "%.1f", sizeKB))KB)...", callback: statusCallback)
 
             // Use LLM to discover schema
             guard let schema = try await llmParser.discoverJSONSchema(from: jsonString) else {
                 print("[SmartParser] Failed to discover schema")
-                await updateStatus("❌ AI couldn't find job structure", callback: statusCallback)
+                await updateStatus("AI couldn't find job structure", callback: statusCallback)
                 return nil
             }
 
-            await updateStatus("✅ AI discovered schema: \(schema.jobsArrayPath)", callback: statusCallback)
+            await updateStatus("AI discovered schema: \(schema.jobsArrayPath)", callback: statusCallback)
 
             // Parse jobs using discovered schema
             let parsedJobs = jsonParser.extractJobs(from: jsonString, using: schema, baseURL: apiURL)
@@ -774,8 +815,6 @@ actor SmartJobParser {
         }
     }
 
-    /// Try simple JSON extraction without LLM (for when LLM previously failed)
-    /// This uses heuristics to find job arrays in common JSON structures
     private func trySimpleAPIExtraction(
         apiCall: DetectedAPICall,
         baseURL: URL,
@@ -1111,14 +1150,10 @@ actor SmartJobParser {
                 cleanURL = String(cleanURL[..<range.lowerBound]) + "/"
             }
         case "greenhouse":
-            // Greenhouse format: https://boards.greenhouse.io/company/jobs/12345
-            // We want: https://boards.greenhouse.io/company
             if let range = cleanURL.range(of: "/jobs/", options: .caseInsensitive) {
                 cleanURL = String(cleanURL[..<range.lowerBound])
             }
         case "lever":
-            // Lever format: https://jobs.lever.co/company/job-id
-            // We want: https://jobs.lever.co/company
             if let url = URL(string: cleanURL),
                let host = url.host,
                host.contains("lever.co") {
@@ -1128,8 +1163,6 @@ actor SmartJobParser {
                 }
             }
         case "ashby":
-            // Ashby format: https://jobs.ashbyhq.com/company/job-id
-            // We want: https://jobs.ashbyhq.com/company
             if let url = URL(string: cleanURL),
                let host = url.host,
                host.contains("ashbyhq.com") {
@@ -1147,24 +1180,6 @@ actor SmartJobParser {
 
     /// Apply title and location filters
     private func applyFilters(_ jobs: [Job], titleFilter: String, locationFilter: String) -> [Job] {
-        var filtered = jobs
-
-        if !titleFilter.isEmpty {
-            let keywords = titleFilter.lowercased().components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            filtered = filtered.filter { job in
-                let jobTitle = job.title.lowercased()
-                return keywords.contains { jobTitle.contains($0) }
-            }
-        }
-
-        if !locationFilter.isEmpty {
-            let locations = locationFilter.lowercased().components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            filtered = filtered.filter { job in
-                let jobLocation = job.location.lowercased()
-                return locations.contains { jobLocation.contains($0) }
-            }
-        }
-
-        return filtered
+        jobs.filtered(titleFilter: titleFilter, locationFilter: locationFilter)
     }
 }
