@@ -66,6 +66,12 @@ actor SmartJobParser {
     private let cachedFetcher = CachedSchemaFetcher()
     private let detectedATSCache = DetectedATSCache.shared
 
+    /// Result from WebKit detection attempt - includes rendered HTML for reuse
+    private struct WebKitDetectionResult {
+        let jobs: [Job]?
+        let renderedHTML: String?  // HTML from WebKit render, for fallback parsing
+    }
+
     func parseJobs(from url: URL, titleFilter: String = "", locationFilter: String = "", statusCallback: (@Sendable (String) -> Void)? = nil) async -> [Job] {
         let secureURL = upgradeToHTTPS(url)
         print("[SmartParser] Parsing jobs from: \(secureURL.absoluteString)")
@@ -120,14 +126,23 @@ actor SmartJobParser {
 
     private func parseWithLLM(url: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async -> [Job] {
         do {
-            if let jobs = try await tryWebKitAPIDetection(from: url, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
+            let webKitResult = try await tryWebKitAPIDetection(from: url, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback)
+
+            if let jobs = webKitResult.jobs, !jobs.isEmpty {
                 return jobs
             }
 
             print("[SmartParser] WebKit approach failed, scanning scripts for patterns...")
             await updateStatus("Scanning page for job board patterns...", callback: statusCallback)
 
-            let html = try await fetchHTML(from: url)
+            // Reuse WebKit-rendered HTML if available, otherwise fetch (may fail for WAF-protected sites)
+            let html: String
+            if let renderedHTML = webKitResult.renderedHTML, renderedHTML.count > 500 {
+                print("[SmartParser] Reusing WebKit-rendered HTML (\(renderedHTML.count) chars) for pattern scanning")
+                html = renderedHTML
+            } else {
+                html = try await fetchHTML(from: url)
+            }
             let scanResult = scanScriptsForPatterns(in: html)
 
             if let firstATSURL = scanResult.atsURLs.first,
@@ -171,6 +186,7 @@ actor SmartJobParser {
                     let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
                     if !filteredJobs.isEmpty {
                         await updateStatus("Found \(filteredJobs.count) jobs in embedded JSON", callback: statusCallback)
+                        await llmParser.unloadModel()
                         return filteredJobs
                     }
                 }
@@ -196,6 +212,7 @@ actor SmartJobParser {
                             statusCallback: statusCallback
                         )
                         if !jobs.isEmpty {
+                            await llmParser.unloadModel()
                             return jobs
                         }
                     }
@@ -216,6 +233,7 @@ actor SmartJobParser {
                         locationFilter: locationFilter,
                         statusCallback: statusCallback
                     ) {
+                        await llmParser.unloadModel()
                         return jobs
                     }
                 }
@@ -226,6 +244,9 @@ actor SmartJobParser {
             let parsedJobs = try await llmParser.extractJobs(from: html, url: url)
             let jobs = parsedJobs.compactMap { convertToJob($0, url: url) }
             let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
+
+            // Unload LLM model to free memory
+            await llmParser.unloadModel()
 
             if !filteredJobs.isEmpty {
                 await updateStatus("Found \(filteredJobs.count) jobs via HTML parsing", callback: statusCallback)
@@ -238,6 +259,8 @@ actor SmartJobParser {
         } catch {
             print("[SmartParser] LLM parsing failed: \(error)")
             await updateStatus("AI parsing failed: \(error.localizedDescription)", callback: statusCallback)
+            // Ensure model is unloaded even on error
+            await llmParser.unloadModel()
             return []
         }
     }
@@ -314,11 +337,12 @@ actor SmartJobParser {
         return nil
     }
 
-    private func tryWebKitAPIDetection(from url: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async throws -> [Job]? {
-        guard let domain = url.host else { return nil }
+    private func tryWebKitAPIDetection(from url: URL, titleFilter: String, locationFilter: String, statusCallback: (@Sendable (String) -> Void)?) async throws -> WebKitDetectionResult {
+        guard let domain = url.host else { return WebKitDetectionResult(jobs: nil, renderedHTML: nil) }
 
         var skipLLMAnalysis = false
         var useDirectHTMLExtraction = false
+        var lastRenderedHTML: String?  // Track the most recent WebKit-rendered HTML for reuse
 
         if let cachedSchema = await schemaCache.getSchema(for: domain) {
             print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered), htmlExtractionWorks: \(cachedSchema.htmlExtractionWorks)")
@@ -347,7 +371,7 @@ actor SmartJobParser {
                 print("[SmartParser] Using cached schema for \(domain)")
                 await updateStatus("Using cached schema for \(domain)", callback: statusCallback)
                 if let jobs = await fetchWithCachedSchema(cachedSchema, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
-                    return jobs
+                    return WebKitDetectionResult(jobs: jobs, renderedHTML: nil)
                 }
                 print("[SmartParser] Cached fetch failed, will re-render with WebKit for fresh auth")
                 await updateStatus("Cached schema failed, re-analyzing...", callback: statusCallback)
@@ -384,7 +408,7 @@ actor SmartJobParser {
                     print("[SmartParser] Fast path: extracted \(jobs.count) jobs via simple API extraction")
                     await updateStatus("Found \(jobs.count) jobs", callback: statusCallback)
                     await schemaCache.updateLastFetched(for: domain)
-                    return jobs
+                    return WebKitDetectionResult(jobs: jobs, renderedHTML: result.html)
                 }
             }
 
@@ -394,11 +418,12 @@ actor SmartJobParser {
                     print("[SmartParser] Fast path extracted \(jobs.count) jobs from HTML")
                     await updateStatus("Found \(jobs.count) jobs", callback: statusCallback)
                     await schemaCache.updateLastFetched(for: domain)
-                    return jobs
+                    return WebKitDetectionResult(jobs: jobs, renderedHTML: result.html)
                 }
             }
 
-            // Fast path failed, fall through to full analysis
+            // Fast path failed, save HTML for reuse and fall through to full analysis
+            lastRenderedHTML = result.html
             print("[SmartParser] Fast path extraction failed, trying full analysis")
             await updateStatus("Fast path failed, analyzing page...", callback: statusCallback)
         }
@@ -430,7 +455,8 @@ actor SmartJobParser {
 
         guard shouldUseWebKit else {
             print("[SmartParser] Not a SPA (hasDataDiv: \(hasDataDiv), size: \(initialHTML.count), minimalContent: \(hasMinimalContent)), skipping WebKit rendering")
-            return nil
+            // Return the fetched HTML for LLM fallback
+            return WebKitDetectionResult(jobs: nil, renderedHTML: initialHTML.count > 500 ? initialHTML : lastRenderedHTML)
         }
 
         if likelyBlocked {
@@ -443,6 +469,9 @@ actor SmartJobParser {
 
         let renderer = await WebKitRenderer()
         let result = try await renderer.renderWithAPIDetection(from: url, waitTime: 8.0)
+
+        // Store rendered HTML for reuse in LLM fallback
+        lastRenderedHTML = result.html
 
         print("[SmartParser] WebKit rendered HTML length: \(result.html.count) chars")
         print("[SmartParser] Detected \(result.detectedAPICalls.count) API calls")
@@ -507,7 +536,7 @@ actor SmartJobParser {
 
         if let jobs = foundJobs {
             await llmParser.unloadModel()
-            return jobs
+            return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
         }
 
         print("[SmartParser] Scanning WebKit-rendered HTML for ATS patterns...")
@@ -536,7 +565,7 @@ actor SmartJobParser {
                         statusCallback: statusCallback
                     )
                     if !jobs.isEmpty {
-                        return jobs
+                        return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
                     }
                 } catch {
                     print("[SmartParser] Failed to fetch from detected ATS: \(error)")
@@ -555,7 +584,7 @@ actor SmartJobParser {
                 statusCallback: statusCallback
             ) {
                 await llmParser.unloadModel()
-                return jobs
+                return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
             }
         }
 
@@ -570,7 +599,7 @@ actor SmartJobParser {
                 // Cache that HTML extraction works for this domain
                 await schemaCache.markHTMLExtractionWorks(for: domain)
                 await llmParser.unloadModel()
-                return jobs
+                return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
             }
         }
 
@@ -580,7 +609,8 @@ actor SmartJobParser {
             await schemaCache.markLLMAttemptFailed(for: domain)
         }
         await updateStatus("No valid job API found", callback: statusCallback)
-        return nil
+        // Return rendered HTML for LLM fallback even though we found no jobs
+        return WebKitDetectionResult(jobs: nil, renderedHTML: lastRenderedHTML)
     }
 
     /// Extract jobs directly from HTML using common patterns
