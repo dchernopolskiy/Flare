@@ -263,8 +263,6 @@ func showToast(_ message: String) {
 }
 
 struct Badge: View {
-    @State private var isAnimating = false
-    
     var body: some View {
         Text("NEW")
             .font(.system(size: 8, weight: .bold))
@@ -273,12 +271,6 @@ struct Badge: View {
             .padding(.vertical, 2)
             .background(Color.orange)
             .cornerRadius(4)
-            .scaleEffect(isAnimating ? 1.1 : 1.0)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-                    isAnimating = true
-                }
-            }
     }
 }
 
@@ -295,8 +287,6 @@ struct AppliedBadge: View {
 }
 
 struct RefreshedBadge: View {
-    @State private var isAnimating = false
-    
     var body: some View {
         Text("REPOSTED")
             .font(.system(size: 8, weight: .bold))
@@ -305,12 +295,6 @@ struct RefreshedBadge: View {
             .padding(.vertical, 2)
             .background(Color.blue)
             .cornerRadius(4)
-            .scaleEffect(isAnimating ? 1.05 : 1.0)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-                    isAnimating = true
-                }
-            }
     }
 }
 
