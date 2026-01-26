@@ -183,6 +183,8 @@ struct AddBoardSection: View {
     @Binding var newBoardURL: String
     @Binding var testingBoardId: UUID?
     @State private var detectionPreview: JobBoardMonitor.DetectionPreview?
+    @State private var detectionFailed = false
+    @State private var detectionError: String?
     @ObservedObject private var monitor = JobBoardMonitor.shared
     @EnvironmentObject var jobManager: JobManager
 
@@ -203,10 +205,16 @@ struct AddBoardSection: View {
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: newBoardURL) { _, _ in
                     detectionPreview = nil
+                    detectionFailed = false
+                    detectionError = nil
                 }
 
             if monitor.detectionInProgress {
                 DetectionProgressView(status: monitor.detectionStatus)
+            }
+
+            if detectionFailed {
+                DetectionFailedView(errorMessage: detectionError)
             }
 
             Text("Supported: Greenhouse, Ashbyhq, Lever, Workday, and custom sites with AI parsing")
@@ -251,6 +259,10 @@ struct AddBoardSection: View {
     private func startDetection() {
         guard let url = URL(string: newBoardURL) else { return }
 
+        // Reset state before starting
+        detectionFailed = false
+        detectionError = nil
+
         Task {
             if let preview = await monitor.detectAndPreview(url: url) {
                 await MainActor.run {
@@ -258,6 +270,17 @@ struct AddBoardSection: View {
                         newBoardName = extractCompanyName(from: newBoardURL)
                     }
                     detectionPreview = preview
+                }
+            } else {
+                // Detection failed - show error to user
+                await MainActor.run {
+                    detectionFailed = true
+                    let aiEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
+                    if !aiEnabled {
+                        detectionError = "No jobs found. Try enabling AI parsing in Settings for better detection."
+                    } else {
+                        detectionError = "Could not find jobs on this page. The site may use an unsupported format or require login."
+                    }
                 }
             }
         }
@@ -312,6 +335,38 @@ struct DetectionProgressView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.blue.opacity(0.1))
+        .cornerRadius(8)
+    }
+}
+
+// MARK: - Detection Failed View
+
+struct DetectionFailedView: View {
+    let errorMessage: String?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .font(.title3)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Unable to Add Job Board")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundColor(.primary)
+
+                Text(errorMessage ?? "No jobs were found on this page.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.1))
         .cornerRadius(8)
     }
 }

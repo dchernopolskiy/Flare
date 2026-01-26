@@ -58,3 +58,5 @@ Flare.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceStat
 .DS_Store
 Flare.xcodeproj/project.pbxproj
 /BackupData
+/Leaks 1.trace
+/Trace1.trace
