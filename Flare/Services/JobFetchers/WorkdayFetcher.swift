@@ -68,7 +68,7 @@ actor WorkdayFetcher: URLBasedJobFetcherProtocol {
         var offset = 0
         let limit = 20
         
-        for page in 0..<5 {
+        for page in 0..<15 {
             print("[Workday] Fetching page \(page + 1) for \(config.company) (offset: \(offset))...")
 
             let response = try await fetchJobsPage(
@@ -198,7 +198,9 @@ actor WorkdayFetcher: URLBasedJobFetcherProtocol {
             "appliedFacets": [:],
             "limit": 20,
             "offset": offset,
-            "searchText": searchText
+            "searchText": searchText,
+            "sortBy": "postedOn",
+            "sortOrder": "DESC"
         ]
         
         if !locationIds.isEmpty {
@@ -301,6 +303,9 @@ actor WorkdayFetcher: URLBasedJobFetcherProtocol {
         let fullJobId = "workday-\(jobId)"
         let firstSeenDate = storedJobDates[fullJobId] ?? currentDate
 
+        // Determine work site flexibility - use remoteType if available, otherwise parse from location
+        let workSiteFlexibility = workdayJob.remoteType ?? extractRemoteFromLocation(workdayJob.locationsText)
+
         return Job(
             id: fullJobId,
             title: title,
@@ -308,7 +313,7 @@ actor WorkdayFetcher: URLBasedJobFetcherProtocol {
             postingDate: postingDate,
             url: jobURL,
             description: "",
-            workSiteFlexibility: workdayJob.remoteType,
+            workSiteFlexibility: workSiteFlexibility,
             source: .workday,
             companyName: config.company.replacingOccurrences(of: "-", with: " ")
                 .split(separator: " ")
@@ -322,6 +327,22 @@ actor WorkdayFetcher: URLBasedJobFetcherProtocol {
         )
     }
     
+    private func extractRemoteFromLocation(_ locationsText: String?) -> String? {
+        guard let text = locationsText?.lowercased() else { return nil }
+
+        // Check for remote indicators in the location text
+        // Examples: "US, CA, Remote", "Germany, Remote", "Remote - US"
+        if text.contains("remote") {
+            // Check if it's hybrid (contains both remote and on-site indicators)
+            if text.contains("hybrid") {
+                return "Hybrid"
+            }
+            return "Remote"
+        }
+
+        return nil
+    }
+
     private func parsePostedDate(_ postedText: String) -> Date? {
         let lowercased = postedText.lowercased()
 

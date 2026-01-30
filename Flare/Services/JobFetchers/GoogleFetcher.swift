@@ -174,22 +174,24 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         for jobArray in jobsArray {
             guard jobArray.count >= 8 else { continue }
 
-            // Structure: [jobId, title, url, [responsibilities], [qualifications], company, locale, [locations], ...]
+            // Structure: [jobId, title, signinUrl, [responsibilities], [qualifications], company, locale, [locations], ...]
             guard let jobId = jobArray[0] as? String,
-                  let title = jobArray[1] as? String,
-                  let rawURL = jobArray[2] as? String else {
+                  let title = jobArray[1] as? String else {
                 continue
             }
 
-            // Build full URL from relative path
-            let url: String
-            if rawURL.hasPrefix("http") {
-                url = rawURL
-            } else if rawURL.hasPrefix("/") {
-                url = "https://www.google.com\(rawURL)"
-            } else {
-                url = "https://www.google.com/about/careers/applications/\(rawURL)"
-            }
+            // Build job detail URL from jobId and slugified title
+            // Format: /jobs/results/{jobId}-{slug}
+            let slug = title.lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ",", with: "")
+                .replacingOccurrences(of: ".", with: "")
+                .replacingOccurrences(of: "(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+                .replacingOccurrences(of: "&", with: "and")
+                .replacingOccurrences(of: "--", with: "-")
+            let url = "https://www.google.com/about/careers/applications/jobs/results/\(jobId)-\(slug)"
 
             // Extract location from the locations array (index 7)
             var location = "Not specified"
@@ -320,18 +322,19 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             location = locations.joined(separator: "; ")
         }
 
+        // Build URL from job ID and title slug (HTML href is unreliable)
         var jobURL: String?
-        if let urlMatch = html.range(of: #"<a class="WpHeLc[^"]*" href="([^"]+)""#, options: .regularExpression) {
-            let path = extractText(from: String(html[urlMatch]), pattern: #"href="([^"]+)""#)
-            if let path = path {
-                if path.hasPrefix("http") {
-                    jobURL = path
-                } else if path.hasPrefix("/") {
-                    jobURL = "https://www.google.com\(path)"
-                } else {
-                    jobURL = "https://www.google.com/about/careers/applications/\(path)"
-                }
-            }
+        if let jobTitle = title, let sskValue = jobId?.replacingOccurrences(of: "google-", with: "") {
+            let slug = jobTitle.lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ",", with: "")
+                .replacingOccurrences(of: ".", with: "")
+                .replacingOccurrences(of: "(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+                .replacingOccurrences(of: "&", with: "and")
+                .replacingOccurrences(of: "--", with: "-")
+            jobURL = "https://www.google.com/about/careers/applications/jobs/results/\(sskValue)-\(slug)"
         }
 
         var experienceLevel: String?
