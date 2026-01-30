@@ -62,7 +62,8 @@ struct MSPosition: Codable {
     var wasBumped: Bool {
         guard let creation = creationTs else { return false }
         let timeDiff = postedTs - creation
-        return timeDiff > 3600
+        // 48 hours threshold - jobs refreshed within 2 days of creation are normal
+        return timeDiff > (48 * 3600)
     }
 }
 
