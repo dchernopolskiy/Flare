@@ -73,9 +73,9 @@ class JobManager: ObservableObject {
 
         var filtered = allJobsSorted
 
-        // 48h date filter based on posting date, with 24h grace for newly discovered jobs
+        // 48h date filter based on posting date or discovery time
         let postingCutoff: TimeInterval = 172800  // 48 hours
-        let discoveryCutoff: TimeInterval = 86400  // 24 hours
+        let discoveryCutoff: TimeInterval = 172800  // 48 hours
         filtered = filtered.filter { job in
             if job.isBumpedRecently { return true }
             // Primary: show if posted within 48h
@@ -87,19 +87,27 @@ class JobManager: ObservableObject {
 
         // Title filter
         if !titleFilter.isEmpty {
-            let keywords = titleFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            filtered = filtered.filter { job in
-                let title = job.title.lowercased()
-                return keywords.contains { title.contains($0) }
+            let keywords = titleFilter.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                filtered = filtered.filter { job in
+                    let title = job.title.lowercased()
+                    return keywords.contains { title.contains($0) }
+                }
             }
         }
 
         // Location filter
         if !locationFilter.isEmpty {
-            let keywords = locationFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            filtered = filtered.filter { job in
-                let location = job.location.lowercased()
-                return keywords.contains { location.contains($0) }
+            let keywords = locationFilter.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                filtered = filtered.filter { job in
+                    let location = job.location.lowercased()
+                    return keywords.contains { location.contains($0) }
+                }
             }
         }
 

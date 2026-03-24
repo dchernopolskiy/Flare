@@ -34,6 +34,8 @@ class JobBoardMonitor: ObservableObject {
     private let ashbyFetcher = AshbyFetcher()
     private let leverFetcher = LeverFetcher()
     private let workdayFetcher = WorkdayFetcher()
+    private let icimsFetcher = iCIMSFetcher()
+    private let taleoFetcher = TaleoFetcher()
     private let smartParser = SmartJobParser()
     private var monitorTimer: Timer?
     
@@ -455,6 +457,10 @@ class JobBoardMonitor: ObservableObject {
             return try await leverFetcher.fetchJobs(from: url, titleFilter: "", locationFilter: "")
         case .workday:
             return try await workdayFetcher.fetchJobs(from: url, titleFilter: "", locationFilter: "")
+        case .icims:
+            return try await icimsFetcher.fetchJobs(from: url, titleFilter: "", locationFilter: "")
+        case .taleo:
+            return try await taleoFetcher.fetchJobs(from: url, titleFilter: "", locationFilter: "")
         default:
             return []
         }
@@ -615,6 +621,10 @@ class JobBoardMonitor: ObservableObject {
             return try await leverFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         case .workday:
             return try await workdayFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case .icims:
+            return try await icimsFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case .taleo:
+            return try await taleoFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         default:
             // Use SmartJobParser for unknown sources (falls back to LLM if enabled)
             // Pass status callback to show parsing progress

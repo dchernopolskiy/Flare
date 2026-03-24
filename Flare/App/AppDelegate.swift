@@ -20,23 +20,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var updateCheckTimer: Timer?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // If another instance is already running, activate it and quit this one
-        if let bundleId = Bundle.main.bundleIdentifier {
-            let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
-            if runningApps.count > 1 {
-                for app in runningApps where app != NSRunningApplication.current {
-                    app.activate(options: [.activateIgnoringOtherApps])
-                }
-                DispatchQueue.main.async {
-                    NSApplication.shared.terminate(nil)
-                }
-                return
-            }
-        }
-
         setupStatusBar()
         setupSparkle()
         setupUpdateCheckTimer()
+
+        // Set ourselves as window delegate so we can intercept close → hide
+        DispatchQueue.main.async {
+            NSApplication.shared.windows.forEach { window in
+                guard window.title == "Flare" || window.isMainWindow else { return }
+                window.delegate = self
+            }
+        }
 
         // Listen for preference changes
         NotificationCenter.default.addObserver(
@@ -61,11 +55,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // When dock icon clicked or notification opens app, show existing window instead of creating new one
-        if let window = NSApplication.shared.windows.first {
+        if let window = NSApplication.shared.windows.first(where: { $0.title == "Flare" || $0.isMainWindow }) {
             window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
-        return true
+        return false  // Prevents SwiftUI from creating a new Window scene instance
     }
     
     func setupStatusBar() {
@@ -135,5 +129,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @objc private func updateCheckPreferenceChanged() {
         updateCheckTimer?.invalidate()
         setupUpdateCheckTimer()
+    }
+}
+
+// MARK: - NSWindowDelegate
+extension AppDelegate: NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // Hide instead of close so the window always exists for notification and reopen handling
+        sender.orderOut(nil)
+        return false
     }
 }

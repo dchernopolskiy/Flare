@@ -61,9 +61,10 @@ class NotificationService: NSObject {
         do {
             try await UNUserNotificationCenter.current().add(request)
         } catch {
+            print("[Notification] Failed to send notification for job \(job.id): \(error.localizedDescription)")
         }
     }
-    
+
     private func sendMultipleJobsNotification(_ jobs: [Job]) async {
         let content = UNMutableNotificationContent()
         content.title = "\(jobs.count) New Jobs Posted"
@@ -91,9 +92,10 @@ class NotificationService: NSObject {
         do {
             try await UNUserNotificationCenter.current().add(request)
         } catch {
+            print("[Notification] Failed to send grouped notification: \(error.localizedDescription)")
         }
     }
-    
+
     private func createNotificationImage(for source: JobSource) -> URL? {
         // TODO: -
         return nil
@@ -105,20 +107,25 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        
+
         let userInfo = response.notification.request.content.userInfo
         if let jobId = userInfo["jobId"] as? String {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            
-            if let window = NSApplication.shared.windows.first {
-                window.makeKeyAndOrderFront(nil)
-            }
-            
             Task { @MainActor in
+                // Bring app to front
+                NSApplication.shared.activate(ignoringOtherApps: true)
+
+                // Find and show the main window
+                if let window = NSApplication.shared.windows.first(where: { $0.title == "Flare" || $0.isMainWindow }) {
+                    window.makeKeyAndOrderFront(nil)
+                } else if let window = NSApplication.shared.windows.first {
+                    window.makeKeyAndOrderFront(nil)
+                }
+
+                // Select the job
                 JobManager.shared.selectJob(withId: jobId)
             }
         }
-        
+
         completionHandler()
     }
     

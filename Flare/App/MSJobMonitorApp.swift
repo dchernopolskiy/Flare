@@ -18,7 +18,7 @@ struct MSJobMonitorApp: App {
     @AppStorage("isFirstLaunch") private var isFirstLaunch = true
 
     var body: some Scene {
-        WindowGroup {
+        Window("Flare", id: "main") {
             ContentView()
                 .environmentObject(jobManager)
                 .environmentObject(boardMonitor)
