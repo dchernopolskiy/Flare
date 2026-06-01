@@ -425,7 +425,7 @@ struct SettingsView: View {
                     // Action Buttons
                     HStack {
                         Button("Save Settings") {
-                            saveSettings()
+                            saveSettings(refreshNow: false)
                             showSuccessMessage = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                                 showSuccessMessage = false
@@ -434,10 +434,7 @@ struct SettingsView: View {
                         .buttonStyle(.borderedProminent)
                         
                         Button("Save and Refresh Now") {
-                            saveSettings()
-                            Task {
-                                await jobManager.fetchAllJobs()
-                            }
+                            saveSettings(refreshNow: true)
                         }
                         Spacer()
                         
@@ -484,7 +481,7 @@ struct SettingsView: View {
         }
     }
 
-    private func saveSettings() {
+    private func saveSettings(refreshNow: Bool) {
         jobManager.jobTitleFilter = titleFilter
         jobManager.locationFilter = locationFilter
         jobManager.refreshInterval = refreshInterval
@@ -502,7 +499,11 @@ struct SettingsView: View {
         jobManager.enableAIParser = enableAIParser
 
         Task {
-            await jobManager.startMonitoring()
+            if refreshNow {
+                await jobManager.startMonitoring()
+            } else {
+                jobManager.applyMonitoringSettings()
+            }
         }
     }
 

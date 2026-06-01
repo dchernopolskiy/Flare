@@ -16,24 +16,13 @@ import Sparkle
 class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var statusItem: NSStatusItem?
     var popover = NSPopover()
+    /// Set by SwiftUI on first window appear — the only reliable way to show/recreate
+    /// a SwiftUI Window scene from outside the view hierarchy.
+    var openMainWindow: (() -> Void)?
     private var updaterController: SPUStandardUpdaterController?
     private var updateCheckTimer: Timer?
-    
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // If another instance is already running, activate it and quit this one
-        if let bundleId = Bundle.main.bundleIdentifier {
-            let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
-            if runningApps.count > 1 {
-                for app in runningApps where app != NSRunningApplication.current {
-                    app.activate(options: [.activateIgnoringOtherApps])
-                }
-                DispatchQueue.main.async {
-                    NSApplication.shared.terminate(nil)
-                }
-                return
-            }
-        }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
         setupSparkle()
         setupUpdateCheckTimer()
@@ -61,30 +50,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // When dock icon clicked or notification opens app, show existing window instead of creating new one
-        if let window = NSApplication.shared.windows.first {
-            window.makeKeyAndOrderFront(nil)
-        }
-        return true
+        showMainWindow()
+        return false
     }
-    
+
+    func showMainWindow() {
+        if let window = NSApplication.shared.windows.first(where: { $0.title == "Flare" || $0.isMainWindow }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            // Window was fully closed by SwiftUI — recreate it via openWindow(id:)
+            openMainWindow?()
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
+
         if let button = statusItem?.button {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
             button.image = NSImage(systemSymbolName: "briefcase.fill", accessibilityDescription: "Job Monitor")?
                 .withSymbolConfiguration(config)
             button.action = #selector(togglePopover)
-            button.toolTip = "Microsoft Job Monitor"
+            button.toolTip = "Flare"
         }
     }
-    
+
     @objc func togglePopover() {
-        if let window = NSApplication.shared.windows.first {
-            window.makeKeyAndOrderFront(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
+        showMainWindow()
     }
 
     // MARK: - Sparkle Setup

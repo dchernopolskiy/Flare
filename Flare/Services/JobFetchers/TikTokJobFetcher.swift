@@ -26,8 +26,7 @@ actor TikTokJobFetcher: JobFetcherProtocol {
             currentDate: currentDate
         )
 
-        // Also fetch remote jobs by adding "remote" to keyword search
-        if !location.lowercased().contains("remote") && !titleKeywords.contains(where: { $0.lowercased().contains("remote") }) {
+        if shouldIncludeRemote(location: location, titleKeywords: titleKeywords) {
             var remoteKeywords = titleKeywords
             remoteKeywords.append("remote")
 
@@ -44,6 +43,17 @@ actor TikTokJobFetcher: JobFetcherProtocol {
 
         await trackingService.saveTrackingData(allJobs, for: "tiktok", currentDate: currentDate, retentionDays: 30)
         return allJobs
+    }
+
+    private func shouldIncludeRemote(location: String, titleKeywords: [String]) -> Bool {
+        let titleHasRemote = titleKeywords.contains { $0.localizedCaseInsensitiveContains("remote") }
+        guard !titleHasRemote else { return false }
+
+        if location.localizedCaseInsensitiveContains("remote") {
+            return true
+        }
+
+        return UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
     }
 
     private func fetchJobsWithParams(

@@ -21,16 +21,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
         if !extractedJobs.isEmpty {
             FetcherLog.info("Universal", "Found \(extractedJobs.count) jobs via JSON/API")
-            let filtered = filterJobs(extractedJobs, titleFilter: titleFilter, locationFilter: locationFilter)
-
-            if isLLMEnabled {
-                let llmJobs = await tryLLMExtraction(html: html, url: url)
-                if llmJobs.count > filtered.count {
-                    FetcherLog.info("Universal", "LLM found more (\(llmJobs.count) vs \(filtered.count))")
-                    return filterJobs(llmJobs, titleFilter: titleFilter, locationFilter: locationFilter)
-                }
-            }
-            return filtered
+            return filterJobs(extractedJobs, titleFilter: titleFilter, locationFilter: locationFilter)
         }
 
         if isLLMEnabled {
@@ -214,7 +205,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
                 var jobURL = baseURL.absoluteString
                 if let url = schema["url"] as? String {
-                    jobURL = url.hasPrefix("http") ? url : "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "")\(url)"
+                    jobURL = resolveURL(url, relativeTo: baseURL) ?? baseURL.absoluteString
                 }
 
                 var postingDate: Date?
@@ -227,7 +218,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                     ?? extractCompanyName(from: baseURL)
 
                 let job = Job(
-                    id: "schema-\(UUID().uuidString)",
+                    id: stableJobID(prefix: "schema", sourceID: nil, url: jobURL, title: title, location: location, companyName: companyName),
                     title: title,
                     location: location,
                     postingDate: postingDate,
@@ -445,15 +436,16 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
             var jobURL = baseURL.absoluteString
             if let url = pos["url"] as? String ?? pos["applyUrl"] as? String ?? pos["apply_url"] as? String {
-                jobURL = url.hasPrefix("http") ? url : "https://\(baseURL.host ?? "")\(url)"
+                jobURL = resolveURL(url, relativeTo: baseURL) ?? baseURL.absoluteString
             } else if let id = pos["id"] ?? pos["jobId"] ?? pos["job_id"] {
                 var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
                 components?.path = "/careers/job/\(id)"
                 jobURL = components?.url?.absoluteString ?? baseURL.absoluteString
             }
+            let companyName = pos["company"] as? String ?? extractCompanyName(from: baseURL)
 
             return Job(
-                id: "radancy-\(pos["id"] ?? UUID().uuidString)",
+                id: stableJobID(prefix: "radancy", sourceID: (pos["id"] ?? pos["jobId"] ?? pos["job_id"]).map { "\($0)" }, url: jobURL, title: title, location: location, companyName: companyName),
                 title: title,
                 location: location,
                 postingDate: nil,
@@ -461,7 +453,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 description: pos["description"] as? String ?? "",
                 workSiteFlexibility: WorkFlexibility.extract(from: "\(title) \(location)"),
                 source: .unknown,
-                companyName: pos["company"] as? String ?? extractCompanyName(from: baseURL),
+                companyName: companyName,
                 department: pos["department"] as? String ?? pos["category"] as? String,
                 category: pos["category"] as? String,
                 firstSeenDate: Date(),
@@ -496,13 +488,14 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 if skipPatterns.contains(where: { title.lowercased().contains($0) }) { continue }
                 if title.count < 5 { continue }
 
-                let fullUrl = jobUrl.hasPrefix("http") ? jobUrl : "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "")\(jobUrl)"
+                let fullUrl = resolveURL(jobUrl, relativeTo: baseURL) ?? baseURL.absoluteString
 
                 if seenURLs.contains(fullUrl) { continue }
                 seenURLs.insert(fullUrl)
+                let companyName = extractCompanyName(from: baseURL)
 
                 let job = Job(
-                    id: "html-\(UUID().uuidString)",
+                    id: stableJobID(prefix: "html", sourceID: nil, url: fullUrl, title: title, location: "See job details", companyName: companyName),
                     title: title,
                     location: "See job details",
                     postingDate: nil,
@@ -510,7 +503,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                     description: "",
                     workSiteFlexibility: WorkFlexibility.extract(from: title),
                     source: detectSource(from: baseURL),
-                    companyName: extractCompanyName(from: baseURL),
+                    companyName: companyName,
                     department: nil,
                     category: nil,
                     firstSeenDate: Date(),
@@ -602,30 +595,25 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             var jobURL = baseURL.absoluteString
             for key in urlKeys {
                 if let u = dict[key] as? String, !u.isEmpty {
-                    if u.hasPrefix("http") {
-                        jobURL = u
-                    } else if u.hasPrefix("/") {
-                        jobURL = "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "")\(u)"
-                    } else {
-                        jobURL = "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "")/\(u)"
-                    }
+                    jobURL = resolveURL(u, relativeTo: baseURL) ?? baseURL.absoluteString
                     break
                 }
             }
 
             let idKeys = ["id", "jobId", "requisitionID", "uniqueID", "slug", "req_id"]
-            var jobId = "\(idPrefix)-\(UUID().uuidString)"
+            var sourceID: String?
             for key in idKeys {
                 if let id = dict[key] {
-                    jobId = "\(idPrefix)-\(id)"
+                    sourceID = "\(id)"
                     break
                 }
             }
 
             let description = dict["description"] as? String ?? ""
+            let companyName = extractCompanyName(from: baseURL)
 
             return Job(
-                id: jobId,
+                id: stableJobID(prefix: idPrefix, sourceID: sourceID, url: jobURL, title: jobTitle, location: location, companyName: companyName),
                 title: jobTitle,
                 location: location,
                 postingDate: nil,
@@ -633,7 +621,7 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
                 description: HTMLCleaner.cleanHTML(description),
                 workSiteFlexibility: WorkFlexibility.extract(from: "\(jobTitle) \(location) \(description)"),
                 source: detectSource(from: baseURL),
-                companyName: extractCompanyName(from: baseURL),
+                companyName: companyName,
                 department: dict["department"] as? String,
                 category: dict["category"] as? String,
                 firstSeenDate: Date(),
@@ -662,6 +650,38 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
             .capitalized ?? "Unknown Company"
     }
 
+    private nonisolated func resolveURL(_ rawURL: String?, relativeTo baseURL: URL) -> String? {
+        guard let rawURL, !rawURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return URL(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines), relativeTo: baseURL)?.absoluteURL.absoluteString
+    }
+
+    private nonisolated func stableJobID(prefix: String, sourceID: String?, url: String, title: String, location: String, companyName: String?) -> String {
+        let seed = [
+            sourceID,
+            Optional(canonicalURL(url)),
+            companyName,
+            Optional(title),
+            Optional(location)
+        ]
+        .compactMap { $0?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
+        .joined(separator: "|")
+
+        let hash = seed.sha256() ?? seed
+        return "\(prefix)-\(String(hash.prefix(24)))"
+    }
+
+    private nonisolated func canonicalURL(_ urlString: String) -> String {
+        guard var components = URLComponents(string: urlString) else { return urlString }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        components.queryItems = components.queryItems?.filter { item in
+            let lowercased = item.name.lowercased()
+            return !lowercased.hasPrefix("utm_") && lowercased != "source"
+        }
+        return components.string ?? urlString
+    }
+
     private func filterJobs(_ jobs: [Job], titleFilter: String, locationFilter: String) -> [Job] {
         let titleKeywords = titleFilter.parseAsFilterKeywords()
         let locationKeywords = locationFilter.parseAsFilterKeywords()
@@ -676,23 +696,21 @@ actor UniversalJobFetcher: URLBasedJobFetcherProtocol {
 
                 var jobURL = url.absoluteString
                 if let parsedURL = parsed.url, !parsedURL.isEmpty {
-                    if parsedURL.hasPrefix("http") {
-                        jobURL = parsedURL
-                    } else {
-                        jobURL = "\(url.scheme ?? "https")://\(url.host ?? "")\(parsedURL.hasPrefix("/") ? "" : "/")\(parsedURL)"
-                    }
+                    jobURL = resolveURL(parsedURL, relativeTo: url) ?? url.absoluteString
                 }
+                let location = parsed.location ?? "Not specified"
+                let companyName = extractCompanyName(from: url)
 
                 return Job(
-                    id: "llm-\(UUID().uuidString)",
+                    id: stableJobID(prefix: "llm", sourceID: nil, url: jobURL, title: parsed.title, location: location, companyName: companyName),
                     title: parsed.title,
-                    location: parsed.location ?? "Not specified",
+                    location: location,
                     postingDate: nil,
                     url: jobURL,
                     description: parsed.description ?? "",
-                    workSiteFlexibility: WorkFlexibility.extract(from: "\(parsed.title) \(parsed.location ?? "")"),
+                    workSiteFlexibility: WorkFlexibility.extract(from: "\(parsed.title) \(location)"),
                     source: detectSource(from: url),
-                    companyName: extractCompanyName(from: url),
+                    companyName: companyName,
                     department: nil,
                     category: nil,
                     firstSeenDate: Date(),

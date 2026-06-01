@@ -2,38 +2,24 @@
 //  GoogleFetcher.swift
 //  Flare
 //
-//  Created by Claude on 1/2/25.
-//
 
 import Foundation
 
 actor GoogleFetcher: URLBasedJobFetcherProtocol {
     private let baseURL = "https://www.google.com/about/careers/applications/jobs/results"
     private let trackingService = JobTrackingService.shared
+    private let maxPages = 5
 
     func fetchJobs(from url: URL, titleFilter: String = "", locationFilter: String = "") async throws -> [Job] {
         let trackingData = await trackingService.loadTrackingData(for: "google")
         let currentDate = Date()
 
-        // Fetch jobs with regular location filter
-        var allJobs = try await fetchJobsWithLocation(
-            url: url,
-            titleFilter: titleFilter,
-            locationFilter: locationFilter,
-            trackingData: trackingData,
-            currentDate: currentDate
-        )
+        var allJobs = try await fetchAllPages(url: url, titleFilter: titleFilter, locationFilter: locationFilter, trackingData: trackingData, currentDate: currentDate)
 
-        // Also fetch remote jobs unless user already specified remote
-        if !locationFilter.lowercased().contains("remote") {
-            let remoteJobs = try await fetchJobsWithLocation(
-                url: url,
-                titleFilter: titleFilter,
-                locationFilter: "Remote",
-                trackingData: trackingData,
-                currentDate: currentDate
-            )
-
+        if shouldIncludeRemote(for: locationFilter),
+           !locationFilter.isEmpty,
+           !locationFilter.localizedCaseInsensitiveContains("remote") {
+            let remoteJobs = try await fetchAllPages(url: url, titleFilter: titleFilter, locationFilter: "Remote", trackingData: trackingData, currentDate: currentDate)
             allJobs = allJobs.merging(remoteJobs)
         }
 
@@ -42,123 +28,78 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
         return allJobs
     }
 
-    private func fetchJobsWithLocation(
-        url: URL,
-        titleFilter: String,
-        locationFilter: String,
-        trackingData: [String: Date],
-        currentDate: Date
-    ) async throws -> [Job] {
+    private func fetchAllPages(url: URL, titleFilter: String, locationFilter: String, trackingData: [String: Date], currentDate: Date) async throws -> [Job] {
+        var allJobs: [Job] = []
+        var seenJobIds = Set<String>()
+
+        for page in 1...maxPages {
+            let pageJobs = try await fetchPage(page: page, url: url, titleFilter: titleFilter, locationFilter: locationFilter, trackingData: trackingData, currentDate: currentDate)
+            let newJobs = pageJobs.filter { !seenJobIds.contains($0.id) }
+            newJobs.forEach { seenJobIds.insert($0.id) }
+            allJobs.append(contentsOf: newJobs)
+
+            FetcherLog.debug("Google", "Page \(page): \(pageJobs.count) jobs (\(newJobs.count) new)")
+            if pageJobs.count < 15 { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return allJobs
+    }
+
+    private func fetchPage(page: Int, url: URL, titleFilter: String, locationFilter: String, trackingData: [String: Date], currentDate: Date) async throws -> [Job] {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents(string: baseURL)!
+        var queryItems: [URLQueryItem] = []
 
-        if !titleFilter.isEmpty {
-            components.queryItems = components.queryItems ?? []
-            components.queryItems?.append(URLQueryItem(name: "q", value: titleFilter))
-        }
+        if !titleFilter.isEmpty { queryItems.append(URLQueryItem(name: "q", value: titleFilter)) }
+        if !locationFilter.isEmpty { queryItems.append(URLQueryItem(name: "location", value: locationFilter)) }
+        queryItems.append(URLQueryItem(name: "sort_by", value: "date"))
+        if page > 1 { queryItems.append(URLQueryItem(name: "page", value: String(page))) }
+        components.queryItems = queryItems
 
-        if !locationFilter.isEmpty {
-            components.queryItems = components.queryItems ?? []
-            components.queryItems?.append(URLQueryItem(name: "location", value: locationFilter))
-        }
-
-        components.queryItems = components.queryItems ?? []
-        components.queryItems?.append(URLQueryItem(name: "sort_by", value: "date"))
-
-        guard let finalURL = components.url else {
-            throw FetchError.invalidURL
-        }
+        guard let finalURL = components.url else { throw FetchError.invalidURL }
 
         var request = URLRequest(url: finalURL)
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
 
         let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+              let html = String(data: data, encoding: .utf8) else {
             throw FetchError.invalidResponse
         }
 
-        guard httpResponse.statusCode == 200 else {
-            FetcherLog.error("Google", "HTTP \(httpResponse.statusCode)")
-            throw FetchError.httpError(statusCode: httpResponse.statusCode)
-        }
-
-        guard let html = String(data: data, encoding: .utf8) else {
-            throw FetchError.decodingError(details: "Failed to decode HTML response")
-        }
-
-        // Try to extract jobs from embedded JSON data first
         var jobs = parseEmbeddedJSON(html, trackingData: trackingData, currentDate: currentDate)
-
-        // Fallback to HTML parsing if JSON extraction fails
         if jobs.isEmpty {
-            FetcherLog.debug("Google", "JSON extraction failed, falling back to HTML parsing")
             jobs = parseHTML(html, baseURL: url, trackingData: trackingData, currentDate: currentDate)
         }
         return jobs
     }
 
-    // MARK: - Embedded JSON Parsing
-
     private func parseEmbeddedJSON(_ html: String, trackingData: [String: Date], currentDate: Date) -> [Job] {
         var jobs: [Job] = []
 
-        guard let dataStart = html.range(of: "data: [[") else {
-            return []
-        }
+        guard let dataStart = html.range(of: "data: [[") else { return [] }
 
         let searchStart = dataStart.lowerBound
-        var depth = 0
-        var inString = false
-        var escapeNext = false
+        var depth = 0, inString = false, escapeNext = false, foundStart = false
         var dataEnd: String.Index?
-        var foundStart = false
 
         for i in html.indices[searchStart...] {
             let char = html[i]
-
-            if escapeNext {
-                escapeNext = false
-                continue
-            }
-
-            if char == "\\" && inString {
-                escapeNext = true
-                continue
-            }
-
-            if char == "\"" {
-                inString = !inString
-                continue
-            }
-
+            if escapeNext { escapeNext = false; continue }
+            if char == "\\" && inString { escapeNext = true; continue }
+            if char == "\"" { inString = !inString; continue }
             if !inString {
-                if char == "[" {
-                    if !foundStart {
-                        foundStart = true
-                    }
-                    depth += 1
-                } else if char == "]" {
-                    depth -= 1
-                    if depth == 0 && foundStart {
-                        dataEnd = html.index(after: i)
-                        break
-                    }
-                }
+                if char == "[" { if !foundStart { foundStart = true }; depth += 1 }
+                else if char == "]" { depth -= 1; if depth == 0 && foundStart { dataEnd = html.index(after: i); break } }
             }
         }
 
-        guard let endIndex = dataEnd else {
-            return []
-        }
+        guard let endIndex = dataEnd else { return [] }
 
-        // Extract just the array portion (skip "data: ")
-        let dataStartIndex = html.index(dataStart.lowerBound, offsetBy: 6) // Skip "data: "
+        let dataStartIndex = html.index(dataStart.lowerBound, offsetBy: 6)
         let jsonString = String(html[dataStartIndex..<endIndex])
-
-        // Unescape unicode sequences
         let unescapedJSON = jsonString
             .replacingOccurrences(of: "\\u003d", with: "=")
             .replacingOccurrences(of: "\\u003c", with: "<")
@@ -167,78 +108,42 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
 
         guard let jsonData = unescapedJSON.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [Any],
-              let jobsArray = parsed.first as? [[Any]] else {
-            return []
-        }
+              let jobsArray = parsed.first as? [[Any]] else { return [] }
 
         for jobArray in jobsArray {
-            guard jobArray.count >= 8 else { continue }
+            guard jobArray.count >= 8,
+                  let rawJobId = jobArray[0] as? String,
+                  let title = jobArray[1] as? String else { continue }
 
-            // Structure: [jobId, title, signinUrl, [responsibilities], [qualifications], company, locale, [locations], ...]
-            guard let jobId = jobArray[0] as? String,
-                  let title = jobArray[1] as? String else {
-                continue
-            }
+            let jobId = rawJobId.contains(":") ? String(rawJobId.split(separator: ":").last ?? Substring(rawJobId)) : rawJobId
+            let url = "https://www.google.com/about/careers/applications/jobs/results/\(jobId)-\(title.toURLSlug())"
 
-            // Build job detail URL from jobId and slugified title
-            // Format: /jobs/results/{jobId}-{slug}
-            let slug = title.lowercased()
-                .replacingOccurrences(of: " ", with: "-")
-                .replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: ",", with: "")
-                .replacingOccurrences(of: ".", with: "")
-                .replacingOccurrences(of: "(", with: "")
-                .replacingOccurrences(of: ")", with: "")
-                .replacingOccurrences(of: "&", with: "and")
-                .replacingOccurrences(of: "--", with: "-")
-            let url = "https://www.google.com/about/careers/applications/jobs/results/\(jobId)-\(slug)"
-
-            // Extract location from the locations array (index 7)
             var location = "Not specified"
             if jobArray.count > 7, let locationsArray = jobArray[7] as? [[Any]] {
-                let locationStrings = locationsArray.compactMap { locArray -> String? in
-                    // First element is the location string like "New York, NY, USA"
-                    return locArray.first as? String
-                }
-                if !locationStrings.isEmpty {
-                    location = locationStrings.joined(separator: "; ")
-                }
+                let locationStrings = locationsArray.compactMap { $0.first as? String }
+                if !locationStrings.isEmpty { location = locationStrings.joined(separator: "; ") }
             }
 
-            // Extract description from responsibilities (index 3) and qualifications (index 4)
             var description = ""
             if jobArray.count > 4 {
-                if let respArray = jobArray[3] as? [Any], respArray.count > 1,
-                   let responsibilities = respArray[1] as? String {
-                    description = stripHTML(responsibilities)
+                if let respArray = jobArray[3] as? [Any], respArray.count > 1, let resp = respArray[1] as? String {
+                    description = stripHTML(resp)
                 }
-                if let qualArray = jobArray[4] as? [Any], qualArray.count > 1,
-                   let qualifications = qualArray[1] as? String {
-                    let qualText = stripHTML(qualifications)
-                    if !description.isEmpty {
-                        description += "\n\n"
-                    }
-                    description += qualText
+                if let qualArray = jobArray[4] as? [Any], qualArray.count > 1, let qual = qualArray[1] as? String {
+                    if !description.isEmpty { description += "\n\n" }
+                    description += stripHTML(qual)
                 }
             }
 
-            // Extract experience level from the experience array (index 10 if present)
             var experienceLevel: String?
             if jobArray.count > 10, let expArray = jobArray[10] as? [Int] {
-                // Experience levels: 2 = Mid, 3 = Senior, 4 = Lead/Staff
-                if expArray.contains(4) {
-                    experienceLevel = "Lead/Staff"
-                } else if expArray.contains(3) {
-                    experienceLevel = "Senior"
-                } else if expArray.contains(2) {
-                    experienceLevel = "Mid"
-                }
+                if expArray.contains(4) { experienceLevel = "Lead/Staff" }
+                else if expArray.contains(3) { experienceLevel = "Senior" }
+                else if expArray.contains(2) { experienceLevel = "Mid" }
             }
 
             let fullJobId = "google-\(jobId)"
-            let firstSeenDate = trackingData[fullJobId] ?? currentDate
-
-            let job = Job(
+            jobs.append(Job(
                 id: fullJobId,
                 title: title,
                 location: location,
@@ -250,52 +155,37 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
                 companyName: "Google",
                 department: nil,
                 category: experienceLevel,
-                firstSeenDate: firstSeenDate,
+                firstSeenDate: trackingData[fullJobId] ?? currentDate,
                 originalPostingDate: nil,
                 wasBumped: false
-            )
-            jobs.append(job)
+            ))
         }
-
         return jobs
     }
 
-    private func stripHTML(_ html: String) -> String {
-        HTMLCleaner.cleanHTML(html)
-    }
-
-    // MARK: - HTML Parsing (Fallback)
+    private func stripHTML(_ html: String) -> String { HTMLCleaner.cleanHTML(html) }
 
     private func parseHTML(_ html: String, baseURL: URL, trackingData: [String: Date], currentDate: Date) -> [Job] {
         var jobs: [Job] = []
-
-        // Pattern: <li class="lLd3Je" ssk='18:103872267078771398'>
         let jobPattern = #"<li class="lLd3Je" ssk='[^']*'>.*?</li>"#
 
-        guard let jobRegex = try? NSRegularExpression(pattern: jobPattern, options: [.dotMatchesLineSeparators]) else {
-            return []
-        }
-
+        guard let jobRegex = try? NSRegularExpression(pattern: jobPattern, options: .dotMatchesLineSeparators) else { return [] }
         let matches = jobRegex.matches(in: html, range: NSRange(html.startIndex..., in: html))
 
         for match in matches.prefix(100) {
             guard let range = Range(match.range, in: html) else { continue }
-            let jobHTML = String(html[range])
-
-            if let job = parseJobListing(jobHTML, baseURL: baseURL, trackingData: trackingData, currentDate: currentDate) {
+            if let job = parseJobListing(String(html[range]), baseURL: baseURL, trackingData: trackingData, currentDate: currentDate) {
                 jobs.append(job)
             }
         }
-
         return jobs
     }
 
     private func parseJobListing(_ html: String, baseURL: URL, trackingData: [String: Date], currentDate: Date) -> Job? {
         var jobId: String?
         if let sskMatch = html.range(of: #"ssk='([^']+)'"#, options: .regularExpression) {
-            let sskValue = String(html[sskMatch])
-                .replacingOccurrences(of: "ssk='", with: "")
-                .replacingOccurrences(of: "'", with: "")
+            var sskValue = String(html[sskMatch]).replacingOccurrences(of: "ssk='", with: "").replacingOccurrences(of: "'", with: "")
+            if sskValue.contains(":") { sskValue = String(sskValue.split(separator: ":").last ?? Substring(sskValue)) }
             jobId = "google-\(sskValue)"
         }
 
@@ -312,56 +202,32 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             for match in matches {
                 if let range = Range(match.range, in: html),
                    let text = extractText(from: String(html[range]), pattern: #">([^<]+)<"#) {
-                    let cleaned = text.trimmingCharacters(in: .whitespaces)
-                        .replacingOccurrences(of: "^;\\s*", with: "", options: .regularExpression)
-                    if !cleaned.isEmpty && !locations.contains(cleaned) {
-                        locations.append(cleaned)
-                    }
+                    let cleaned = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "^;\\s*", with: "", options: .regularExpression)
+                    if !cleaned.isEmpty && !locations.contains(cleaned) { locations.append(cleaned) }
                 }
             }
             location = locations.joined(separator: "; ")
         }
 
-        // Build URL from job ID and title slug (HTML href is unreliable)
         var jobURL: String?
         if let jobTitle = title, let sskValue = jobId?.replacingOccurrences(of: "google-", with: "") {
-            let slug = jobTitle.lowercased()
-                .replacingOccurrences(of: " ", with: "-")
-                .replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: ",", with: "")
-                .replacingOccurrences(of: ".", with: "")
-                .replacingOccurrences(of: "(", with: "")
-                .replacingOccurrences(of: ")", with: "")
-                .replacingOccurrences(of: "&", with: "and")
-                .replacingOccurrences(of: "--", with: "-")
-            jobURL = "https://www.google.com/about/careers/applications/jobs/results/\(sskValue)-\(slug)"
+            jobURL = "https://www.google.com/about/careers/applications/jobs/results/\(sskValue)-\(jobTitle.toURLSlug())"
         }
 
         var experienceLevel: String?
-        if html.contains(#"<span class="wVSTAb">Advanced</span>"#) {
-            experienceLevel = "Advanced"
-        } else if html.contains(#"<span class="wVSTAb">Entry</span>"#) {
-            experienceLevel = "Entry"
-        } else if html.contains(#"<span class="wVSTAb">Mid</span>"#) {
-            experienceLevel = "Mid"
-        }
+        if html.contains(#"<span class="wVSTAb">Advanced</span>"#) { experienceLevel = "Advanced" }
+        else if html.contains(#"<span class="wVSTAb">Entry</span>"#) { experienceLevel = "Entry" }
+        else if html.contains(#"<span class="wVSTAb">Mid</span>"#) { experienceLevel = "Mid" }
 
         var description = ""
         let qualPattern = #"<h4>Minimum qualifications</h4>.*?</ul>"#
-        if let qualRegex = try? NSRegularExpression(pattern: qualPattern, options: [.dotMatchesLineSeparators]),
+        if let qualRegex = try? NSRegularExpression(pattern: qualPattern, options: .dotMatchesLineSeparators),
            let match = qualRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
            let range = Range(match.range, in: html) {
-            description = String(html[range])
-                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            description = String(html[range]).replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        guard let jobTitle = title, !jobTitle.isEmpty,
-              let finalJobId = jobId else {
-            return nil
-        }
-
-        let firstSeenDate = trackingData[finalJobId] ?? currentDate
+        guard let jobTitle = title, !jobTitle.isEmpty, let finalJobId = jobId else { return nil }
 
         return Job(
             id: finalJobId,
@@ -375,23 +241,24 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
             companyName: "Google",
             department: nil,
             category: experienceLevel,
-            firstSeenDate: firstSeenDate,
+            firstSeenDate: trackingData[finalJobId] ?? currentDate,
             originalPostingDate: nil,
             wasBumped: false
         )
     }
 
     private func extractText(from html: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-            return nil
-        }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: html) else { return nil }
+        return HTMLCleaner.cleanHTML(String(html[range]))
+    }
 
-        if let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-           match.numberOfRanges > 1,
-           let range = Range(match.range(at: 1), in: html) {
-            return HTMLCleaner.cleanHTML(String(html[range]))
+    private func shouldIncludeRemote(for locationFilter: String) -> Bool {
+        if locationFilter.localizedCaseInsensitiveContains("remote") {
+            return true
         }
-
-        return nil
+        return UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
     }
 }

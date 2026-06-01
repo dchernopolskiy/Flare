@@ -44,7 +44,8 @@ actor LeverFetcher: URLBasedJobFetcherProtocol {
         }
 
         let titleKeywords = titleFilter.parseAsFilterKeywords()
-        let locationKeywords = locationFilter.parseAsFilterKeywords().includingRemote()
+        let includeRemote = UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
+        let locationKeywords = locationFilter.parseAsFilterKeywords().includingRemote(if: includeRemote)
 
         let allJobs = decoded.compactMap { job -> Job? in
             guard !job.text.isEmpty, !job.id.isEmpty, !job.hostedUrl.isEmpty else { return nil }

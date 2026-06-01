@@ -29,7 +29,26 @@ private struct SourceConfig {
 
 @MainActor
 class JobManager: ObservableObject {
-    static let shared = JobManager()
+    private static let defaultUserDefaults: [String: Any] = [
+        "refreshInterval": 30.0,
+        "maxPagesToFetch": 5,
+        "enableMicrosoft": true,
+        "enableApple": false,
+        "enableGoogle": false,
+        "enableTikTok": false,
+        "enableSnap": true,
+        "enableAMD": true,
+        "enableMeta": true,
+        "enableCustomBoards": true,
+        "includeRemoteJobs": true,
+        "autoCheckForUpdates": true,
+        "enableAIParser": false
+    ]
+
+    static let shared: JobManager = {
+        UserDefaults.standard.register(defaults: defaultUserDefaults)
+        return JobManager()
+    }()
 
     // MARK: - Published Properties
     @Published var allJobs: [Job] = [] {
@@ -45,7 +64,6 @@ class JobManager: ObservableObject {
     private var allJobsSorted: [Job] = []
     @Published var isLoading = false
     @Published var loadingProgress = ""
-    @Published var showSettings = false
     @Published var lastError: String?
     @Published var selectedJob: Job?
     @Published var selectedTab = "jobs"
@@ -73,9 +91,9 @@ class JobManager: ObservableObject {
 
         var filtered = allJobsSorted
 
-        // 48h date filter based on posting date, with 24h grace for newly discovered jobs
+        // 48h date filter based on posting date or discovery time
         let postingCutoff: TimeInterval = 172800  // 48 hours
-        let discoveryCutoff: TimeInterval = 86400  // 24 hours
+        let discoveryCutoff: TimeInterval = 172800  // 48 hours
         filtered = filtered.filter { job in
             if job.isBumpedRecently { return true }
             // Primary: show if posted within 48h
@@ -87,19 +105,27 @@ class JobManager: ObservableObject {
 
         // Title filter
         if !titleFilter.isEmpty {
-            let keywords = titleFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            filtered = filtered.filter { job in
-                let title = job.title.lowercased()
-                return keywords.contains { title.contains($0) }
+            let keywords = titleFilter.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                filtered = filtered.filter { job in
+                    let title = job.title.lowercased()
+                    return keywords.contains { title.contains($0) }
+                }
             }
         }
 
         // Location filter
         if !locationFilter.isEmpty {
-            let keywords = locationFilter.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            filtered = filtered.filter { job in
-                let location = job.location.lowercased()
-                return keywords.contains { location.contains($0) }
+            let keywords = locationFilter.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { !$0.isEmpty }
+            if !keywords.isEmpty {
+                filtered = filtered.filter { job in
+                    let location = job.location.lowercased()
+                    return keywords.contains { location.contains($0) }
+                }
             }
         }
 
@@ -149,7 +175,15 @@ class JobManager: ObservableObject {
         let stored = UserDefaults.standard.double(forKey: "refreshInterval")
         return stored > 0 ? stored : 30.0
     }() {
-        didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
+        didSet {
+            let clamped = max(1.0, refreshInterval)
+            if clamped != refreshInterval {
+                refreshInterval = clamped
+                return
+            }
+            UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval")
+            rescheduleActiveTimers()
+        }
     }
 
     @Published var maxPagesToFetch: Int = UserDefaults.standard.object(forKey: "maxPagesToFetch") as? Int ?? 5 {
@@ -185,7 +219,10 @@ class JobManager: ObservableObject {
     }
 
     @Published var enableCustomBoards: Bool = UserDefaults.standard.object(forKey: "enableCustomBoards") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(enableCustomBoards, forKey: "enableCustomBoards") }
+        didSet {
+            UserDefaults.standard.set(enableCustomBoards, forKey: "enableCustomBoards")
+            updateCustomBoardMonitoring()
+        }
     }
 
     @Published var includeRemoteJobs: Bool = UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true {
@@ -212,6 +249,7 @@ class JobManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var jobsBySource: [JobSource: [Job]] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private var isMonitoring = false
 
     // Source toggle bindings - maps source to its enable publisher
     private lazy var sourceBindings: [(source: JobSource, publisher: Published<Bool>.Publisher)] = [
@@ -257,6 +295,7 @@ class JobManager: ObservableObject {
         for binding in sourceBindings {
             binding.publisher
                 .sink { [weak self] enabled in
+                    guard self?.isMonitoring == true else { return }
                     if enabled {
                         self?.startMonitoringSource(binding.source)
                     } else {
@@ -269,34 +308,40 @@ class JobManager: ObservableObject {
 
     // MARK: - Public Methods
     func startMonitoring() async {
+        isMonitoring = true
+
         if allJobs.isEmpty {
             await loadStoredData()
         }
 
         await fetchAllJobs()
 
-        let sources: [(enabled: Bool, source: JobSource)] = [
-            (enableMicrosoft, .microsoft),
-            (enableApple, .apple),
-            (enableTikTok, .tiktok),
-            (enableSnap, .snap),
-            (enableAMD, .amd),
-            (enableMeta, .meta),
-            (enableGoogle, .google)
-        ]
-
-        for (enabled, source) in sources where enabled {
+        for (enabled, source) in enabledSourceStates() where enabled {
             startMonitoringSource(source)
         }
 
-        if enableCustomBoards {
-            await JobBoardMonitor.shared.startMonitoring()
-        }
+        updateCustomBoardMonitoring()
     }
 
     func stopMonitoring() {
+        isMonitoring = false
         fetchTimers.values.forEach { $0.invalidate() }
         fetchTimers.removeAll()
+        JobBoardMonitor.shared.stopMonitoring()
+    }
+
+    func applyMonitoringSettings() {
+        guard isMonitoring else { return }
+
+        for (enabled, source) in enabledSourceStates() {
+            if enabled {
+                startMonitoringSource(source)
+            } else {
+                stopMonitoringSource(source)
+            }
+        }
+
+        updateCustomBoardMonitoring()
     }
 
     func fetchAllJobs() async {
@@ -312,9 +357,9 @@ class JobManager: ObservableObject {
         let sources: [(source: JobSource, name: String, enabled: Bool, statsPath: WritableKeyPath<FetchStatistics, Int>?)] = [
             (.microsoft, "Microsoft", enableMicrosoft, \.microsoftJobs),
             (.tiktok, "TikTok", enableTikTok, \.tiktokJobs),
-            (.snap, "Snap", enableSnap, nil),
+            (.snap, "Snap", enableSnap, \.snapJobs),
             (.amd, "AMD", enableAMD, \.amdJobs),
-            (.meta, "Meta", enableMeta, nil),
+            (.meta, "Meta", enableMeta, \.metaJobs),
             (.apple, "Apple", enableApple, \.appleJobs),
             (.google, "Google", enableGoogle, \.googleJobs)
         ]
@@ -337,7 +382,7 @@ class JobManager: ObservableObject {
 
             let customJobs = await JobBoardMonitor.shared.fetchAllBoardJobs(
                 titleFilter: jobTitleFilter,
-                locationFilter: locationFilter
+                locationFilter: locationFilterForFetch()
             )
 
             let customJobsBySource = Dictionary(grouping: customJobs) { $0.source }
@@ -447,8 +492,9 @@ class JobManager: ObservableObject {
 
     // MARK: - Private Methods
     private func startMonitoringSource(_ source: JobSource) {
+        guard isMonitoring else { return }
         fetchTimers[source]?.invalidate()
-        let interval = refreshInterval * 60
+        let interval = max(1.0, refreshInterval) * 60
 
         fetchTimers[source] = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { await self?.fetchJobsFromSource(source) }
@@ -467,6 +513,7 @@ class JobManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            guard self.isMonitoring else { return }
             print("Mac woke up - triggering job refresh")
             Task { await self.fetchAllJobs() }
         }
@@ -532,10 +579,9 @@ class JobManager: ObservableObject {
 
         jobsBySource[source] = jobs
         let newJobs = filterNewJobs(jobs)
+        updateFetchStatistic(for: source, count: jobs.count)
 
-        if !newJobs.isEmpty {
-            await processNewJobs(newJobs, sourceJobsMap: jobsBySource)
-        }
+        await processNewJobs(newJobs, sourceJobsMap: jobsBySource)
     }
 
     private func filterNewJobs(_ jobs: [Job]) -> [Job] {
@@ -608,11 +654,26 @@ class JobManager: ObservableObject {
             let loadedJobs = try await persistenceService.loadJobs()
             jobsBySource = Dictionary(grouping: loadedJobs) { $0.source }
             allJobs = loadedJobs
+        } catch {
+            print("Failed to load stored jobs: \(error)")
+        }
+
+        do {
             storedJobIds = try await persistenceService.loadStoredJobIds()
+        } catch {
+            print("Failed to load stored job IDs: \(error)")
+        }
+
+        do {
             appliedJobIds = try await persistenceService.loadAppliedJobIds()
+        } catch {
+            print("Failed to load applied job IDs: \(error)")
+        }
+
+        do {
             starredJobIds = try await persistenceService.loadStarredJobIds()
         } catch {
-            print("Failed to load stored data: \(error)")
+            print("Failed to load starred job IDs: \(error)")
         }
     }
 
@@ -622,6 +683,55 @@ class JobManager: ObservableObject {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private func locationFilterForFetch() -> String {
+        let keywords = locationFilter.parseAsFilterKeywords()
+        let effectiveKeywords = keywords.includingRemote(if: includeRemoteJobs)
+        return effectiveKeywords.joined(separator: ", ")
+    }
+
+    private func rescheduleActiveTimers() {
+        guard isMonitoring else { return }
+        let activeSources = Array(fetchTimers.keys)
+        for source in activeSources {
+            startMonitoringSource(source)
+        }
+        updateCustomBoardMonitoring()
+    }
+
+    private func updateCustomBoardMonitoring() {
+        guard isMonitoring else { return }
+        if enableCustomBoards {
+            JobBoardMonitor.shared.startMonitoring(interval: max(1.0, refreshInterval) * 60)
+        } else {
+            JobBoardMonitor.shared.stopMonitoring()
+        }
+    }
+
+    private func updateFetchStatistic(for source: JobSource, count: Int) {
+        switch source {
+        case .microsoft: fetchStatistics.microsoftJobs = count
+        case .apple: fetchStatistics.appleJobs = count
+        case .google: fetchStatistics.googleJobs = count
+        case .tiktok: fetchStatistics.tiktokJobs = count
+        case .snap: fetchStatistics.snapJobs = count
+        case .meta: fetchStatistics.metaJobs = count
+        case .amd: fetchStatistics.amdJobs = count
+        default: break
+        }
+    }
+
+    private func enabledSourceStates() -> [(enabled: Bool, source: JobSource)] {
+        [
+            (enableMicrosoft, .microsoft),
+            (enableApple, .apple),
+            (enableTikTok, .tiktok),
+            (enableSnap, .snap),
+            (enableAMD, .amd),
+            (enableMeta, .meta),
+            (enableGoogle, .google)
+        ]
     }
 }
 

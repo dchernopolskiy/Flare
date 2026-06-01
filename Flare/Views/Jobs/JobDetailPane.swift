@@ -320,5 +320,6 @@ struct JobDetailActions: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(job.url, forType: .string)
+        showToast("Link copied!")
     }
 }

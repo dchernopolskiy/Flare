@@ -20,10 +20,26 @@ actor ModelDownloader {
 
     func getModelPath() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let containerURL = appSupport.deletingLastPathComponent().deletingLastPathComponent()
-        let flareDir = containerURL.appendingPathComponent("Data/Library/Application Support/Flare")
+        let flareDir = appSupport.appendingPathComponent("Flare")
         try? FileManager.default.createDirectory(at: flareDir, withIntermediateDirectories: true)
-        return flareDir.appendingPathComponent(modelFileName)
+        let modelPath = flareDir.appendingPathComponent(modelFileName)
+
+        if !FileManager.default.fileExists(atPath: modelPath.path),
+           let oldPath = legacyModelPaths().first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            try? FileManager.default.moveItem(at: oldPath, to: modelPath)
+        }
+
+        return modelPath
+    }
+
+    private func legacyModelPaths() -> [URL] {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let containerURL = appSupport.deletingLastPathComponent().deletingLastPathComponent()
+        return [
+            containerURL
+                .appendingPathComponent("Data/Library/Application Support/Flare")
+                .appendingPathComponent(modelFileName)
+        ]
     }
 
     func isModelDownloaded() -> Bool {

@@ -113,18 +113,22 @@ actor ATSDetectorService {
         var ashby: Int = 0
         var workday: Int = 0
         var beamery: Int = 0
-        
+        var icims: Int = 0
+        var taleo: Int = 0
+
         var isEmpty: Bool {
-            greenhouse == 0 && lever == 0 && ashby == 0 && workday == 0 && beamery == 0
+            greenhouse == 0 && lever == 0 && ashby == 0 && workday == 0 && beamery == 0 && icims == 0 && taleo == 0
         }
-        
+
         var strongest: (source: String, count: Int)? {
             let all = [
                 ("greenhouse", greenhouse),
                 ("lever", lever),
                 ("ashby", ashby),
                 ("workday", workday),
-                ("beamery", beamery)
+                ("beamery", beamery),
+                ("icims", icims),
+                ("taleo", taleo)
             ]
             return all.max(by: { $0.1 < $1.1 })
         }
@@ -178,7 +182,23 @@ actor ATSDetectorService {
                 indicators.workday += 1
             }
         }
-        
+
+        // iCIMS patterns
+        let icimsKeywords = ["icims.com", "icims_", "icims-", "iCIMS", "careers-", ".icims."]
+        for keyword in icimsKeywords {
+            if htmlLower.contains(keyword.lowercased()) {
+                indicators.icims += 1
+            }
+        }
+
+        // Taleo patterns (Oracle Taleo)
+        let taleoKeywords = ["taleo.net", "taleo", "careersection", "jobdetail.ftl", "jobsearch.ftl", "tbe.taleo"]
+        for keyword in taleoKeywords {
+            if htmlLower.contains(keyword) {
+                indicators.taleo += 1
+            }
+        }
+
         return indicators
     }
     
@@ -194,7 +214,9 @@ actor ATSDetectorService {
                 (indicators.greenhouse, { await self.probeGreenhouse(companySlug: companySlug) }),
                 (indicators.lever, { await self.probeLever(companySlug: companySlug) }),
                 (indicators.ashby, { await self.probeAshby(companySlug: companySlug) }),
-                (indicators.beamery + indicators.workday, { await self.probeWorkdayVariations(companySlug: companySlug, originalURL: originalURL) })
+                (indicators.beamery + indicators.workday, { await self.probeWorkdayVariations(companySlug: companySlug, originalURL: originalURL) }),
+                (indicators.icims, { await self.probeICIMS(companySlug: companySlug) }),
+                (indicators.taleo, { await self.probeTaleo(companySlug: companySlug) })
             ]
             
             for (count, probe) in probes.sorted(by: { $0.count > $1.count }) where count > 0 {
@@ -452,8 +474,103 @@ actor ATSDetectorService {
         )
     }
     
+    private func probeICIMS(companySlug: String) async -> DetectionResult? {
+        // iCIMS URL patterns: careers-{company}.icims.com or {company}.icims.com
+        let icimsPatterns = [
+            "https://careers-\(companySlug).icims.com/jobs/search",
+            "https://\(companySlug).icims.com/jobs/search",
+            "https://careers.\(companySlug).icims.com/jobs/search"
+        ]
+
+        for pattern in icimsPatterns {
+            print("[iCIMS Probe] Testing: \(pattern)")
+            if let result = try? await testICIMSURL(pattern) {
+                print("[iCIMS Probe] Success!")
+                return result
+            }
+        }
+
+        print("[iCIMS Probe] All patterns failed")
+        return nil
+    }
+
+    private func testICIMSURL(_ urlString: String) async throws -> DetectionResult {
+        guard let url = URL(string: urlString) else {
+            throw FetchError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 10
+
+        let (data, httpResponse) = try await URLSession.shared.data(for: request)
+
+        guard let response = httpResponse as? HTTPURLResponse,
+              (200...299).contains(response.statusCode),
+              let html = String(data: data, encoding: .utf8),
+              (html.contains("icims") || html.contains("iCIMS")) else {
+            throw FetchError.invalidResponse
+        }
+
+        return DetectionResult(
+            source: .icims,
+            confidence: .certain,
+            apiEndpoint: urlString,
+            actualATSUrl: urlString,
+            message: "Detected iCIMS job board"
+        )
+    }
+
+    private func probeTaleo(companySlug: String) async -> DetectionResult? {
+        // Taleo URL patterns
+        let taleoPatterns = [
+            "https://\(companySlug).taleo.net/careersection/2/jobsearch.ftl",
+            "https://\(companySlug).taleo.net/careersection/ext/jobsearch.ftl",
+            "https://\(companySlug).taleo.net/careersection/external/jobsearch.ftl",
+            "https://chc.tbe.taleo.net/chc01/ats/careers/v2/searchResults?org=\(companySlug.uppercased())"
+        ]
+
+        for pattern in taleoPatterns {
+            print("[Taleo Probe] Testing: \(pattern)")
+            if let result = try? await testTaleoURL(pattern) {
+                print("[Taleo Probe] Success!")
+                return result
+            }
+        }
+
+        print("[Taleo Probe] All patterns failed")
+        return nil
+    }
+
+    private func testTaleoURL(_ urlString: String) async throws -> DetectionResult {
+        guard let url = URL(string: urlString) else {
+            throw FetchError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 10
+
+        let (data, httpResponse) = try await URLSession.shared.data(for: request)
+
+        guard let response = httpResponse as? HTTPURLResponse,
+              (200...299).contains(response.statusCode),
+              let html = String(data: data, encoding: .utf8),
+              (html.contains("taleo") || html.contains("careersection") || html.contains("Taleo")) else {
+            throw FetchError.invalidResponse
+        }
+
+        return DetectionResult(
+            source: .taleo,
+            confidence: .certain,
+            apiEndpoint: urlString,
+            actualATSUrl: urlString,
+            message: "Detected Oracle Taleo job board"
+        )
+    }
+
     // MARK: - Helper Methods
-    
+
     private func extractCompanySlug(from url: URL) -> String {
         if let host = url.host {
             let parts = host.components(separatedBy: ".")

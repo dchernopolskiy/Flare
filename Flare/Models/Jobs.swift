@@ -21,10 +21,29 @@ extension String {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
+
+    /// Converts a string to a URL-safe slug (e.g., "Senior Engineer, AI/ML" -> "senior-engineer-ai-ml")
+    func toURLSlug() -> String {
+        lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+            .replacingOccurrences(of: "&", with: "and")
+            .replacingOccurrences(of: "--", with: "-")
+    }
 }
 
 extension Array where Element == String {
     func includingRemote() -> [String] {
+        includingRemote(if: true)
+    }
+
+    func includingRemote(if shouldIncludeRemote: Bool) -> [String] {
+        guard shouldIncludeRemote, !isEmpty else { return self }
+
         let remoteKeywords = ["remote", "work from home", "distributed", "anywhere"]
         let hasRemoteKeyword = contains { keyword in
             remoteKeywords.contains { remote in
@@ -228,6 +247,8 @@ enum JobSource: String, Codable, CaseIterable {
     case jazzhr = "JazzHR"
     case recruitee = "Recruitee"
     case breezyhr = "Breezy HR"
+    case icims = "iCIMS"
+    case taleo = "Taleo"
     case unknown = "Custom"
     
     var icon: String {
@@ -251,6 +272,8 @@ enum JobSource: String, Codable, CaseIterable {
         case .jazzhr: return "music.note"
         case .recruitee: return "person.2.badge.plus"
         case .breezyhr: return "wind"
+        case .icims: return "building.columns.fill"
+        case .taleo: return "square.grid.3x3.fill"
         case .unknown: return "globe"
         }
     }
@@ -276,6 +299,8 @@ enum JobSource: String, Codable, CaseIterable {
         case .jazzhr: return .yellow
         case .recruitee: return .mint
         case .breezyhr: return .gray
+        case .icims: return .indigo
+        case .taleo: return .red
         case .unknown: return .orange
         }
     }
@@ -297,8 +322,8 @@ enum JobSource: String, Codable, CaseIterable {
 
     var isSupported: Bool {
         switch self {
-        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse,
-             .ashby, .lever, .snap, .amd, .meta, .workday, .unknown:
+        case .microsoft, .apple, .google, .tiktok, .greenhouse,
+             .ashby, .lever, .snap, .amd, .meta, .workday, .icims, .taleo, .unknown:
             return true
         default:
             return false
@@ -346,6 +371,10 @@ enum JobSource: String, Codable, CaseIterable {
             return .recruitee
         } else if lowercased.contains("breezy.hr") {
             return .breezyhr
+        } else if lowercased.contains("icims.com") {
+            return .icims
+        } else if lowercased.contains("taleo.net") || lowercased.contains("tbe.taleo") {
+            return .taleo
         } else {
             // Unknown/custom career site - will use SmartJobParser with LLM fallback
             return .unknown
@@ -526,4 +555,3 @@ class QualificationExtractor {
         return nil
     }
 }
-

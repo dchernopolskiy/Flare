@@ -90,6 +90,16 @@ actor SmartJobParser {
             print("[SmartParser] API/ATS detection failed: \(error.localizedDescription)")
         }
 
+        if let cachedJobs = await fetchFromCachedRouteIfAvailable(
+            url: secureURL,
+            titleFilter: titleFilter,
+            locationFilter: locationFilter,
+            statusCallback: statusCallback
+        ) {
+            print("[SmartParser] Success via cached route: \(cachedJobs.count) jobs")
+            return cachedJobs
+        }
+
         // Fall back to LLM if enabled
         let aiParsingEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
         if aiParsingEnabled {
@@ -120,6 +130,43 @@ actor SmartJobParser {
         await MainActor.run {
             callback(message)
         }
+    }
+
+    private func fetchFromCachedRouteIfAvailable(
+        url: URL,
+        titleFilter: String,
+        locationFilter: String,
+        statusCallback: (@Sendable (String) -> Void)?
+    ) async -> [Job]? {
+        guard let domain = url.host,
+              let cachedSchema = await schemaCache.getSchema(for: domain) else {
+            return nil
+        }
+
+        print("[SmartParser] Cache check for \(domain) before AI gate - schemaDiscovered: \(cachedSchema.schemaDiscovered), simpleAPIExtractionWorks: \(cachedSchema.simpleAPIExtractionWorks), endpoint: \(cachedSchema.endpoint)")
+
+        if cachedSchema.schemaDiscovered {
+            await updateStatus("Using cached schema for \(domain)", callback: statusCallback)
+            return await fetchWithCachedSchema(
+                cachedSchema,
+                titleFilter: titleFilter,
+                locationFilter: locationFilter,
+                statusCallback: statusCallback
+            )
+        }
+
+        if cachedSchema.simpleAPIExtractionWorks || (cachedSchema.htmlExtractionWorks && !cachedSchema.endpoint.isEmpty) {
+            await updateStatus("Using cached API route for \(domain)", callback: statusCallback)
+            return await fetchWithCachedSimpleAPI(
+                cachedSchema,
+                baseURL: url,
+                titleFilter: titleFilter,
+                locationFilter: locationFilter,
+                statusCallback: statusCallback
+            )
+        }
+
+        return nil
     }
 
     // MARK: - LLM-Based Parsing
@@ -186,7 +233,6 @@ actor SmartJobParser {
                     let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
                     if !filteredJobs.isEmpty {
                         await updateStatus("Found \(filteredJobs.count) jobs in embedded JSON", callback: statusCallback)
-                        await llmParser.unloadModel()
                         return filteredJobs
                     }
                 }
@@ -212,7 +258,6 @@ actor SmartJobParser {
                             statusCallback: statusCallback
                         )
                         if !jobs.isEmpty {
-                            await llmParser.unloadModel()
                             return jobs
                         }
                     }
@@ -233,7 +278,6 @@ actor SmartJobParser {
                         locationFilter: locationFilter,
                         statusCallback: statusCallback
                     ) {
-                        await llmParser.unloadModel()
                         return jobs
                     }
                 }
@@ -244,9 +288,6 @@ actor SmartJobParser {
             let parsedJobs = try await llmParser.extractJobs(from: html, url: url)
             let jobs = parsedJobs.compactMap { convertToJob($0, url: url) }
             let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
-
-            // Unload LLM model to free memory
-            await llmParser.unloadModel()
 
             if !filteredJobs.isEmpty {
                 await updateStatus("Found \(filteredJobs.count) jobs via HTML parsing", callback: statusCallback)
@@ -259,8 +300,6 @@ actor SmartJobParser {
         } catch {
             print("[SmartParser] LLM parsing failed: \(error)")
             await updateStatus("AI parsing failed: \(error.localizedDescription)", callback: statusCallback)
-            // Ensure model is unloaded even on error
-            await llmParser.unloadModel()
             return []
         }
     }
@@ -278,6 +317,10 @@ actor SmartJobParser {
             jobs = try await LeverFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         case "ashby":
             jobs = try await AshbyFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case "icims":
+            jobs = try await iCIMSFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
+        case "taleo":
+            jobs = try await TaleoFetcher().fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         default:
             print("[SmartParser] Unknown ATS type: \(atsType)")
             await updateStatus("Unknown ATS type: \(atsType)", callback: statusCallback)
@@ -347,8 +390,25 @@ actor SmartJobParser {
         if let cachedSchema = await schemaCache.getSchema(for: domain) {
             print("[SmartParser] Cache hit for \(domain) - llmAttempted: \(cachedSchema.llmAttempted), schemaDiscovered: \(cachedSchema.schemaDiscovered), htmlExtractionWorks: \(cachedSchema.htmlExtractionWorks)")
 
-            // Fast path: if HTML extraction previously worked, skip API detection and go straight to it
-            if cachedSchema.htmlExtractionWorks {
+            if cachedSchema.schemaDiscovered {
+                print("[SmartParser] Using cached schema for \(domain)")
+                await updateStatus("Using cached schema for \(domain)", callback: statusCallback)
+                if let jobs = await fetchWithCachedSchema(cachedSchema, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
+                    return WebKitDetectionResult(jobs: jobs, renderedHTML: nil)
+                }
+                print("[SmartParser] Cached schema failed, will re-render with WebKit for fresh auth")
+                await updateStatus("Cached schema failed, re-analyzing...", callback: statusCallback)
+            } else if cachedSchema.simpleAPIExtractionWorks || (cachedSchema.htmlExtractionWorks && !cachedSchema.endpoint.isEmpty) {
+                print("[SmartParser] Using cached simple API route for \(domain): \(cachedSchema.endpoint)")
+                await updateStatus("Using cached API route for \(domain)", callback: statusCallback)
+                if let jobs = await fetchWithCachedSimpleAPI(cachedSchema, baseURL: url, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
+                    return WebKitDetectionResult(jobs: jobs, renderedHTML: nil)
+                }
+                print("[SmartParser] Cached simple API route failed, falling back to WebKit")
+                await updateStatus("Cached API route failed, re-rendering...", callback: statusCallback)
+                useDirectHTMLExtraction = cachedSchema.htmlExtractionWorks
+                skipLLMAnalysis = true
+            } else if cachedSchema.htmlExtractionWorks {
                 print("[SmartParser] HTML extraction previously worked for \(domain) - using fast path")
                 await updateStatus("Using cached HTML extraction for \(domain)", callback: statusCallback)
                 useDirectHTMLExtraction = true
@@ -367,15 +427,6 @@ actor SmartJobParser {
                 }
             }
 
-            if cachedSchema.schemaDiscovered {
-                print("[SmartParser] Using cached schema for \(domain)")
-                await updateStatus("Using cached schema for \(domain)", callback: statusCallback)
-                if let jobs = await fetchWithCachedSchema(cachedSchema, titleFilter: titleFilter, locationFilter: locationFilter, statusCallback: statusCallback) {
-                    return WebKitDetectionResult(jobs: jobs, renderedHTML: nil)
-                }
-                print("[SmartParser] Cached fetch failed, will re-render with WebKit for fresh auth")
-                await updateStatus("Cached schema failed, re-analyzing...", callback: statusCallback)
-            }
         } else {
             print("[SmartParser] Cache miss for \(domain) - no cached schema found")
         }
@@ -407,7 +458,7 @@ actor SmartJobParser {
                 ), !jobs.isEmpty {
                     print("[SmartParser] Fast path: extracted \(jobs.count) jobs via simple API extraction")
                     await updateStatus("Found \(jobs.count) jobs", callback: statusCallback)
-                    await schemaCache.updateLastFetched(for: domain)
+                    await cacheSimpleAPIRoute(apiCall, baseURL: url, domain: domain)
                     return WebKitDetectionResult(jobs: jobs, renderedHTML: result.html)
                 }
             }
@@ -498,12 +549,14 @@ actor SmartJobParser {
                 ), !jobs.isEmpty {
                     print("[SmartParser] Successfully fetched \(jobs.count) jobs via simple extraction!")
                     await updateStatus("Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
+                    await cacheSimpleAPIRoute(apiCall, baseURL: url, domain: domain)
                     foundJobs = jobs
                     break
                 }
             } else {
                 if let jobs = await discoverAndCacheSchema(
                     apiCall: apiCall,
+                    baseURL: url,
                     domain: domain,
                     titleFilter: titleFilter,
                     locationFilter: locationFilter,
@@ -526,8 +579,7 @@ actor SmartJobParser {
                 ), !jobs.isEmpty {
                     print("[SmartParser] Successfully fetched \(jobs.count) jobs via simple extraction fallback!")
                     await updateStatus("Found \(jobs.count) jobs via API: \(URL(string: apiCall.url)?.path ?? "")", callback: statusCallback)
-                    // Cache that simple extraction works for this domain so we skip LLM next time
-                    await schemaCache.markSimpleAPIExtractionWorks(for: domain, apiEndpoint: apiCall.url)
+                    await cacheSimpleAPIRoute(apiCall, baseURL: url, domain: domain)
                     foundJobs = jobs
                     break
                 }
@@ -535,7 +587,6 @@ actor SmartJobParser {
         }
 
         if let jobs = foundJobs {
-            await llmParser.unloadModel()
             return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
         }
 
@@ -553,7 +604,6 @@ actor SmartJobParser {
             await updateStatus("Found \(atsType.capitalized) in rendered page!", callback: statusCallback)
 
             await detectedATSCache.store(for: domain, atsURL: baseATSURL, atsType: atsType)
-            await llmParser.unloadModel()
 
             if let detectedURL = URL(string: baseATSURL) {
                 do {
@@ -583,7 +633,6 @@ actor SmartJobParser {
                 locationFilter: locationFilter,
                 statusCallback: statusCallback
             ) {
-                await llmParser.unloadModel()
                 return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
             }
         }
@@ -598,12 +647,9 @@ actor SmartJobParser {
                 await updateStatus("Found \(jobs.count) jobs from rendered page", callback: statusCallback)
                 // Cache that HTML extraction works for this domain
                 await schemaCache.markHTMLExtractionWorks(for: domain)
-                await llmParser.unloadModel()
                 return WebKitDetectionResult(jobs: jobs, renderedHTML: lastRenderedHTML)
             }
         }
-
-        await llmParser.unloadModel()
 
         if !skipLLMAnalysis {
             await schemaCache.markLLMAttemptFailed(for: domain)
@@ -628,18 +674,19 @@ actor SmartJobParser {
                     let jobUrl = String(html[urlRange])
                     let title = String(html[titleRange]).trimmingCharacters(in: .whitespacesAndNewlines)
 
-                    let fullUrl = jobUrl.hasPrefix("http") ? jobUrl : "https://\(baseURL.host ?? "")\(jobUrl)"
+                    let fullUrl = resolveURL(jobUrl, relativeTo: baseURL) ?? baseURL.absoluteString
+                    let company = companyName(from: baseURL)
 
                     let job = Job(
-                        id: "html-\(UUID().uuidString)",
+                        id: stableJobID(prefix: "html", sourceID: nil, url: fullUrl, title: title, location: "See job details", companyName: company),
                         title: title,
                         location: "See job details",
                         postingDate: nil,
                         url: fullUrl,
                         description: "",
-                        workSiteFlexibility: nil,
+                        workSiteFlexibility: WorkFlexibility.extract(from: title),
                         source: .unknown,
-                        companyName: baseURL.host?.replacingOccurrences(of: "www.", with: "").replacingOccurrences(of: "careers.", with: "").capitalized,
+                        companyName: company,
                         department: nil,
                         category: nil,
                         firstSeenDate: Date(),
@@ -673,18 +720,19 @@ actor SmartJobParser {
                         }
 
                         seenUrls.insert(jobUrl)
-                        let fullUrl = jobUrl.hasPrefix("http") ? jobUrl : "https://\(baseURL.host ?? "")\(jobUrl)"
+                        let fullUrl = resolveURL(jobUrl, relativeTo: baseURL) ?? baseURL.absoluteString
+                        let company = companyName(from: baseURL)
 
                         let job = Job(
-                            id: "html-\(UUID().uuidString)",
+                            id: stableJobID(prefix: "html", sourceID: nil, url: fullUrl, title: title, location: "See job details", companyName: company),
                             title: title,
                             location: "See job details",
                             postingDate: nil,
                             url: fullUrl,
                             description: "",
-                            workSiteFlexibility: nil,
+                            workSiteFlexibility: WorkFlexibility.extract(from: title),
                             source: .unknown,
-                            companyName: baseURL.host?.replacingOccurrences(of: "www.", with: "").replacingOccurrences(of: "careers.", with: "").capitalized,
+                            companyName: company,
                             department: nil,
                             category: nil,
                             firstSeenDate: Date(),
@@ -700,12 +748,6 @@ actor SmartJobParser {
         print("[SmartParser] HTML extraction: found \(jobs.count) jobs before filtering")
         let filteredJobs = applyFilters(jobs, titleFilter: titleFilter, locationFilter: locationFilter)
         print("[SmartParser] HTML extraction: \(filteredJobs.count) jobs after filtering")
-
-        // Return unfiltered if filters removed everything
-        if filteredJobs.isEmpty && !jobs.isEmpty {
-            print("[SmartParser] HTML extraction: filters removed all jobs, returning \(jobs.count) unfiltered")
-            return jobs
-        }
 
         return filteredJobs.isEmpty ? nil : filteredJobs
     }
@@ -728,14 +770,63 @@ actor SmartJobParser {
         return jobs.isEmpty ? nil : jobs
     }
 
+    private func fetchWithCachedSimpleAPI(
+        _ schema: DiscoveredAPISchema,
+        baseURL: URL,
+        titleFilter: String,
+        locationFilter: String,
+        statusCallback: (@Sendable (String) -> Void)?
+    ) async -> [Job]? {
+        guard !schema.endpoint.isEmpty else { return nil }
+
+        let apiCall = DetectedAPICall(
+            url: schema.endpoint,
+            method: schema.method,
+            requestBody: schema.requestBody,
+            headers: schema.requestHeaders,
+            response: nil
+        )
+
+        guard let jobs = await trySimpleAPIExtraction(
+            apiCall: apiCall,
+            baseURL: baseURL,
+            titleFilter: titleFilter,
+            locationFilter: locationFilter,
+            statusCallback: statusCallback
+        ), !jobs.isEmpty else {
+            return nil
+        }
+
+        await schemaCache.updateLastFetched(for: schema.domain)
+        print("[SmartParser] Fetched \(jobs.count) jobs using cached simple API route")
+        await updateStatus("Found \(jobs.count) jobs using cached API route", callback: statusCallback)
+        return jobs
+    }
+
+    private func cacheSimpleAPIRoute(_ apiCall: DetectedAPICall, baseURL: URL, domain: String) async {
+        guard let apiURL = URL(string: apiCall.url, relativeTo: baseURL)?.absoluteURL else {
+            await schemaCache.updateLastFetched(for: domain)
+            return
+        }
+
+        await schemaCache.markSimpleAPIExtractionWorks(
+            for: domain,
+            apiEndpoint: apiURL.absoluteString,
+            method: apiCall.method,
+            requestBody: apiCall.requestBody,
+            requestHeaders: apiCall.headers
+        )
+    }
+
     private func discoverAndCacheSchema(
         apiCall: DetectedAPICall,
+        baseURL: URL,
         domain: String,
         titleFilter: String,
         locationFilter: String,
         statusCallback: (@Sendable (String) -> Void)?
     ) async -> [Job]? {
-        guard let apiURL = URL(string: apiCall.url) else { return nil }
+        guard let apiURL = URL(string: apiCall.url, relativeTo: baseURL)?.absoluteURL else { return nil }
 
         do {
             var request = URLRequest(url: apiURL)
@@ -814,7 +905,7 @@ actor SmartJobParser {
 
                 let discoveredSchema = DiscoveredAPISchema(
                     domain: domain,
-                    endpoint: apiCall.url,
+                    endpoint: apiURL.absoluteString,
                     method: apiCall.method,
                     requestBody: apiCall.requestBody,
                     requestHeaders: apiCall.headers,
@@ -852,7 +943,7 @@ actor SmartJobParser {
         locationFilter: String,
         statusCallback: (@Sendable (String) -> Void)?
     ) async -> [Job]? {
-        guard let apiURL = URL(string: apiCall.url) else {
+        guard let apiURL = URL(string: apiCall.url, relativeTo: baseURL)?.absoluteURL else {
             print("[SmartParser] Simple extraction: invalid URL")
             return nil
         }
@@ -860,101 +951,78 @@ actor SmartJobParser {
         print("[SmartParser] Attempting simple extraction from: \(apiURL.absoluteString)")
 
         do {
-            var request = URLRequest(url: apiURL)
-            request.httpMethod = apiCall.method
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+            let data: Data
+            if let response = apiCall.response,
+               !response.isEmpty,
+               let responseData = response.data(using: .utf8),
+               JSONSerialization.isValidJSONObject((try? JSONSerialization.jsonObject(with: responseData)) ?? NSNull()) {
+                data = responseData
+            } else {
+                var request = URLRequest(url: apiURL)
+                request.httpMethod = apiCall.method
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+                request.setValue(baseURL.absoluteString, forHTTPHeaderField: "Referer")
 
-            if let headers = apiCall.headers {
-                for (key, value) in headers {
-                    request.setValue(value, forHTTPHeaderField: key)
+                if let headers = apiCall.headers {
+                    for (key, value) in headers where !key.lowercased().hasPrefix(":") {
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
                 }
-            }
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+                if let body = apiCall.requestBody, !body.isEmpty {
+                    request.httpBody = body.data(using: .utf8)
+                    if request.value(forHTTPHeaderField: "Content-Type") == nil {
+                        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    }
+                }
 
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                return nil
+                let (fetchedData, response) = try await URLSession.shared.data(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200,
+                      httpResponse.value(forHTTPHeaderField: "Content-Type")?.localizedCaseInsensitiveContains("json") != false else {
+                    return nil
+                }
+                data = fetchedData
             }
 
             guard let json = try? JSONSerialization.jsonObject(with: data) else {
                 return nil
             }
 
-            var jobArray: [[String: Any]]?
+            let jobArray = findLikelyJobDictionaries(in: json)
 
-            if let array = json as? [[String: Any]] {
-                jobArray = array
-            } else if let dict = json as? [String: Any] {
-                for key in JobExtractionPatterns.jobArrayKeys {
-                    if let array = dict[key] as? [[String: Any]], !array.isEmpty {
-                        jobArray = array
-                        break
-                    }
-                }
-            }
-
-            guard let jobs = jobArray, !jobs.isEmpty else {
+            guard !jobArray.isEmpty else {
                 print("[SmartParser] Simple extraction: no job array found in JSON")
                 return nil
             }
 
-            print("[SmartParser] Simple extraction: found \(jobs.count) items in job array")
+            print("[SmartParser] Simple extraction: found \(jobArray.count) likely job items")
 
             var extractedJobs: [Job] = []
 
-            for jobDict in jobs {
-                var title: String?
-                for field in JobExtractionPatterns.titleFields {
-                    if let t = jobDict[field] as? String, !t.isEmpty {
-                        title = t
-                        break
-                    }
-                }
-                guard let jobTitle = title else { continue }
+            for jobDict in jobArray {
+                guard let jobTitle = firstStringValue(in: jobDict, fields: JobExtractionPatterns.titleFields) else { continue }
 
-                var location = "Not specified"
-                for field in JobExtractionPatterns.locationFields {
-                    if let loc = jobDict[field] as? String {
-                        location = loc
-                        break
-                    } else if let locs = jobDict[field] as? [[String: Any]], let first = locs.first {
-                        if let loc = first["cityState"] as? String {
-                            location = loc
-                        } else if let loc = first["location"] as? String {
-                            location = loc
-                        } else if let loc = first["name"] as? String {
-                            location = loc
-                        }
-                        break
-                    }
-                }
-
-                var jobURL = baseURL.absoluteString
-                for field in JobExtractionPatterns.urlFields {
-                    if let u = jobDict[field] as? String {
-                        if u.hasPrefix("http") {
-                            jobURL = u
-                        } else {
-                            jobURL = "\(baseURL.scheme ?? "https")://\(baseURL.host ?? "")/jobs/\(u)"
-                        }
-                        break
-                    }
-                }
+                let location = firstLocationValue(in: jobDict) ?? "Not specified"
+                let rawURL = firstStringValue(in: jobDict, fields: JobExtractionPatterns.urlFields)
+                let jobURL = resolveURL(rawURL, relativeTo: baseURL) ?? baseURL.absoluteString
+                let sourceID = firstStringValue(in: jobDict, fields: JobExtractionPatterns.idFields)
+                let companyName = companyName(from: baseURL)
 
                 let job = Job(
-                    id: "simple-\(UUID().uuidString)",
+                    id: stableJobID(prefix: "simple", sourceID: sourceID, url: jobURL, title: jobTitle, location: location, companyName: companyName),
                     title: jobTitle,
                     location: location,
                     postingDate: nil,
                     url: jobURL,
-                    description: "",
-                    workSiteFlexibility: nil,
+                    description: firstStringValue(in: jobDict, fields: ["description", "jobDescription", "summary"]) ?? "",
+                    workSiteFlexibility: WorkFlexibility.extract(from: "\(jobTitle) \(location)"),
                     source: .unknown,
-                    companyName: baseURL.host?.replacingOccurrences(of: "www.", with: "").capitalized,
-                    department: nil,
-                    category: nil,
+                    companyName: companyName,
+                    department: firstStringValue(in: jobDict, fields: ["department", "team", "function"]),
+                    category: firstStringValue(in: jobDict, fields: ["category", "jobCategory"]),
                     firstSeenDate: Date(),
                     originalPostingDate: nil,
                     wasBumped: false
@@ -966,11 +1034,6 @@ actor SmartJobParser {
             let filteredJobs = applyFilters(extractedJobs, titleFilter: titleFilter, locationFilter: locationFilter)
             print("[SmartParser] Simple extraction: \(filteredJobs.count) jobs after filtering")
 
-            // If filtering removed all jobs, return unfiltered to avoid losing data
-            if filteredJobs.isEmpty && !extractedJobs.isEmpty {
-                print("[SmartParser] Simple extraction: filters removed all jobs, returning \(extractedJobs.count) unfiltered jobs")
-                return extractedJobs
-            }
             return filteredJobs.isEmpty ? nil : filteredJobs
 
         } catch {
@@ -1032,6 +1095,9 @@ actor SmartJobParser {
             (#"https?:(?:\\/\\/|//)[^"'\s]*greenhouse\.io[^\s"'<>]*"#, "greenhouse"),
             (#"https?:(?:\\/\\/|//)[^"'\s]*lever\.co[^\s"'<>]*"#, "lever"),
             (#"https?:(?:\\/\\/|//)[^"'\s]*ashbyhq\.com[^\s"'<>]*"#, "ashby"),
+            (#"https?:(?:\\/\\/|//)[^"'\s]*icims\.com[^\s"'<>]*"#, "icims"),
+            (#"https?:(?:\\/\\/|//)[^"'\s]*taleo\.net[^\s"'<>]*"#, "taleo"),
+            (#"https?:(?:\\/\\/|//)[^"'\s]*tbe\.taleo[^\s"'<>]*"#, "taleo"),
         ]
 
         for (pattern, atsType) in atsPatterns {
@@ -1136,17 +1202,20 @@ actor SmartJobParser {
 
     private func convertToJob(_ parsed: ParsedJob, url: URL) -> Job? {
         guard !parsed.title.isEmpty else { return nil }
+        let jobURL = resolveURL(parsed.url, relativeTo: url) ?? url.absoluteString
+        let location = parsed.location ?? "Unknown"
+        let company = companyName(from: url)
 
         return Job(
-            id: "llm-\(UUID().uuidString)",
+            id: stableJobID(prefix: "llm", sourceID: nil, url: jobURL, title: parsed.title, location: location, companyName: company),
             title: parsed.title,
-            location: parsed.location ?? "Unknown",
+            location: location,
             postingDate: nil,
-            url: parsed.url ?? url.absoluteString,
+            url: jobURL,
             description: parsed.description ?? "",
-            workSiteFlexibility: nil,
+            workSiteFlexibility: WorkFlexibility.extract(from: "\(parsed.title) \(location)"),
             source: .unknown,
-            companyName: url.host?.replacingOccurrences(of: "www.", with: "").capitalized,
+            companyName: company,
             department: nil,
             category: nil,
             firstSeenDate: Date(),
@@ -1201,6 +1270,14 @@ actor SmartJobParser {
                     cleanURL = "https://\(host)/\(company)"
                 }
             }
+        case "icims":
+            if let range = cleanURL.range(of: "/jobs/", options: .caseInsensitive) {
+                cleanURL = String(cleanURL[..<range.lowerBound])
+            }
+        case "taleo":
+            if let range = cleanURL.range(of: "/jobdetail.ftl", options: .caseInsensitive) {
+                cleanURL = String(cleanURL[..<range.lowerBound])
+            }
         default:
             break
         }
@@ -1211,5 +1288,152 @@ actor SmartJobParser {
     /// Apply title and location filters
     private func applyFilters(_ jobs: [Job], titleFilter: String, locationFilter: String) -> [Job] {
         jobs.filtered(titleFilter: titleFilter, locationFilter: locationFilter)
+    }
+
+    private func findLikelyJobDictionaries(in value: Any, depth: Int = 0) -> [[String: Any]] {
+        guard depth <= 6 else { return [] }
+
+        if let array = value as? [[String: Any]] {
+            let likely = array.filter(isLikelyJobDictionary)
+            if !likely.isEmpty {
+                return likely
+            }
+
+            return array.prefix(500).flatMap { findLikelyJobDictionaries(in: $0, depth: depth + 1) }
+        }
+
+        if let array = value as? [Any] {
+            return array.prefix(500).flatMap { findLikelyJobDictionaries(in: $0, depth: depth + 1) }
+        }
+
+        guard let dict = value as? [String: Any] else { return [] }
+
+        if isLikelyJobDictionary(dict) {
+            return [dict]
+        }
+
+        var results: [[String: Any]] = []
+        let preferredKeys = JobExtractionPatterns.jobArrayKeys + ["nodes", "edges", "jobCards", "records", "resultsList", "pageProps", "props"]
+        for key in preferredKeys {
+            if let nested = dict[key] {
+                results.append(contentsOf: findLikelyJobDictionaries(in: nested, depth: depth + 1))
+            }
+        }
+
+        if results.isEmpty {
+            for nested in dict.values {
+                results.append(contentsOf: findLikelyJobDictionaries(in: nested, depth: depth + 1))
+                if results.count >= 500 { break }
+            }
+        }
+
+        return dedupeJobDictionaries(results)
+    }
+
+    private func isLikelyJobDictionary(_ dict: [String: Any]) -> Bool {
+        guard firstStringValue(in: dict, fields: JobExtractionPatterns.titleFields) != nil else { return false }
+        return firstStringValue(in: dict, fields: JobExtractionPatterns.urlFields) != nil ||
+            firstStringValue(in: dict, fields: JobExtractionPatterns.idFields) != nil ||
+            firstLocationValue(in: dict) != nil
+    }
+
+    private func dedupeJobDictionaries(_ dictionaries: [[String: Any]]) -> [[String: Any]] {
+        var seen = Set<String>()
+        var result: [[String: Any]] = []
+
+        for dict in dictionaries {
+            let title = firstStringValue(in: dict, fields: JobExtractionPatterns.titleFields) ?? ""
+            let url = firstStringValue(in: dict, fields: JobExtractionPatterns.urlFields) ?? ""
+            let id = firstStringValue(in: dict, fields: JobExtractionPatterns.idFields) ?? ""
+            let key = "\(id)|\(url)|\(title)"
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(dict)
+        }
+
+        return result
+    }
+
+    private func firstStringValue(in dict: [String: Any], fields: [String]) -> String? {
+        for field in fields {
+            if let value = dict[field] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let value = dict[field] as? Int {
+                return String(value)
+            }
+            if let value = dict[field] as? Double {
+                return String(value)
+            }
+            if let nested = dict[field] as? [String: Any],
+               let value = firstStringValue(in: nested, fields: ["name", "title", "text", "value", "label"]) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func firstLocationValue(in dict: [String: Any]) -> String? {
+        for field in JobExtractionPatterns.locationFields {
+            if let location = dict[field] as? String, !location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return location.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let locations = dict[field] as? [[String: Any]], !locations.isEmpty {
+                let parts = locations.prefix(3).compactMap { locationDict in
+                    firstStringValue(in: locationDict, fields: ["cityState", "location", "name", "city", "displayName"])
+                }
+                if !parts.isEmpty {
+                    return parts.joined(separator: ", ")
+                }
+            }
+            if let locationDict = dict[field] as? [String: Any],
+               let location = firstStringValue(in: locationDict, fields: ["cityState", "location", "name", "city", "displayName"]) {
+                return location
+            }
+        }
+        return nil
+    }
+
+    private func resolveURL(_ rawURL: String?, relativeTo baseURL: URL) -> String? {
+        guard let rawURL, !rawURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let cleaned = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(string: cleaned, relativeTo: baseURL)?.absoluteURL.absoluteString
+    }
+
+    private func stableJobID(prefix: String, sourceID: String?, url: String, title: String, location: String, companyName: String?) -> String {
+        let seedParts = [
+            sourceID,
+            Optional(canonicalURL(url)),
+            companyName,
+            Optional(title),
+            Optional(location)
+        ].compactMap { $0?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
+        let seed = seedParts.joined(separator: "|")
+        let hash = seed.sha256() ?? seed
+        return "\(prefix)-\(String(hash.prefix(24)))"
+    }
+
+    private func canonicalURL(_ urlString: String) -> String {
+        guard var components = URLComponents(string: urlString) else { return urlString }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        components.queryItems = components.queryItems?.filter { item in
+            let lowercased = item.name.lowercased()
+            return !lowercased.hasPrefix("utm_") && lowercased != "gh_jid" && lowercased != "source"
+        }
+        return components.string ?? urlString
+    }
+
+    private func companyName(from url: URL) -> String {
+        guard let host = url.host else { return "Unknown Company" }
+        return host
+            .replacingOccurrences(of: "www.", with: "")
+            .replacingOccurrences(of: "careers.", with: "")
+            .replacingOccurrences(of: "jobs.", with: "")
+            .components(separatedBy: ".")
+            .first?
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized ?? "Unknown Company"
     }
 }

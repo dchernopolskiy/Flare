@@ -72,15 +72,33 @@ struct JobBoardConfig: Identifiable, Codable {
     }
 
     init?(name: String, url: String, isEnabled: Bool = true, detectedATSURL: String? = nil, detectedATSType: String? = nil, parsingMethod: ParsingMethod? = nil) {
-        let detectedSource = JobSource.detectFromURL(url) ?? .unknown
+        guard let normalizedURL = Self.normalizedURLString(url) else { return nil }
+        let normalizedATSURL = detectedATSURL.flatMap { Self.normalizedURLString($0) }
+        let detectedSource = JobSource.detectFromURL(normalizedATSURL ?? normalizedURL) ?? .unknown
 
         self.name = name
-        self.url = url
+        self.url = normalizedURL
         self.source = detectedSource
         self.isEnabled = isEnabled
-        self.detectedATSURL = detectedATSURL
+        self.detectedATSURL = normalizedATSURL
         self.detectedATSType = detectedATSType
         self.parsingMethod = parsingMethod
+    }
+
+    static func normalizedURLString(_ rawURL: String) -> String? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              var components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = components.host,
+              !host.isEmpty else {
+            return nil
+        }
+
+        components.scheme = scheme
+        components.fragment = nil
+        return components.url?.absoluteString
     }
 
     init(from decoder: Decoder) throws {

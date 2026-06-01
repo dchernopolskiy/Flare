@@ -25,8 +25,7 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
             pageSize: pageSize
         )
 
-        // Also fetch remote jobs unless user already specified remote
-        if !location.lowercased().contains("remote") {
+        if shouldIncludeRemote(for: location), !location.localizedCaseInsensitiveContains("remote") {
             let remoteJobs = try await fetchJobsWithLocation(
                 keywords: keywords,
                 location: "remote",
@@ -38,6 +37,13 @@ actor AMDFetcher: JobFetcherProtocol, URLBasedJobFetcherProtocol {
         }
 
         return allJobs
+    }
+
+    private func shouldIncludeRemote(for location: String) -> Bool {
+        if location.localizedCaseInsensitiveContains("remote") {
+            return true
+        }
+        return UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
     }
 
     private func fetchJobsWithLocation(keywords: String, location: String?, maxPages: Int, pageSize: Int) async throws -> [Job] {

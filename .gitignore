@@ -1,62 +1,26 @@
-MSJobMonitor.xcodeproj/xcuserdata/dan.xcuserdatad/xcdebugger/Breakpoints_v2.xcbkptlist
-MSJobMonitor.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-Build MSJobMonitor_2025-09-28T12-43-12.txt
-Build MSJobMonitor_2025-09-28T13-44-30.txt
-Build MSJobMonitor_2025-09-28T14-27-17.txt
-MSJobMonitor.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-MSJobMonitor.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-MSJobMonitor/.DS_Store
+# macOS and Xcode user state
 .DS_Store
-MSJobMonitor/Services/.DS_Store
-MSJobMonitor/Views/.DS_Store
-trim.sh
-MSJobMonitor.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-MSJobMonitor/.DS_Store
-MSJobMonitor/Models/.DS_Store
-MSJobMonitor/Services/.DS_Store
-MSJobMonitor/Services/.DS_Store
-MSJobMonitor/Views/.DS_Store
-MSJobMonitor/.DS_Store
-MSJobMonitor.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-MSJobMonitor.xcodeproj/project.xcworkspace/xcuserdata/mediaserver.xcuserdatad/UserInterfaceState.xcuserstate
-MSJobMonitor.xcodeproj/xcuserdata/mediaserver.xcuserdatad/xcschemes/xcschememanagement.plist
-MSJobMonitor/.DS_Store
-MSJobMonitor/Services/.DS_Store
-MSJobMonitor/Models/.DS_Store
-MSJobMonitor/Views/.DS_Store
-Build MSJobMonitor_2025-10-09T15-53-33.txt
-Build MSJobMonitor_2025-10-09T16-11-08.txt
-Backup/appliedJobs.json
-Backup/boardConfigs.json
-Backup/jobs.json
-Backup/snapJobTracking.json
-Backup/storedIds.json
-Backup/tiktokJobIds.json
-Backup/workday_sec_tracking.json
-Backup/workday_sonyglobal_tracking.json
-Build MSJobMonitor_2025-11-02T21-14-42.txt
-Backup/workday_nvidia_tracking.json
-Backup/workday_adobe_tracking.json
-MSJobMonitor/Views/.DS_Store
-backup/tiktokJobTracking.json
-backup/starredJobs.json
-backup/metaJobTracking.json
-backup/job-boards-export.txt
-backup/ashby_Replit_tracking.json
-backup/ashby_openai_tracking.json
-backup/ashby_Notion_tracking.json
-backup/ashby_elevenlabs_tracking.json
-backup/ashby_Character_tracking.json
+xcuserdata/
+*.xcuserstate
+*.xcbkptlist
 
-# LLM Models (download on first use)
+# Build and diagnostic output
+DerivedData/
+Build*.txt
+*.trace
+/Leaks*.trace
+/Trace*.trace
+
+# Local backups and exported app data
+/Backup/
+/backup/
+/BackupData/
+
+# LLM models downloaded on first use
 *.gguf
 Flare/Resources/Models/*.gguf
-Flare.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-.DS_Store
-Flare.xcodeproj/project.xcworkspace/xcuserdata/dan.xcuserdatad/UserInterfaceState.xcuserstate
-.DS_Store
-.DS_Store
-Flare.xcodeproj/project.pbxproj
-/BackupData
-/Leaks 1.trace
-/Trace1.trace
+
+# Beads / Dolt local database files
+.dolt/
+*.db
+.beads-credential-key
