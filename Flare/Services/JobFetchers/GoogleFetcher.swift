@@ -16,7 +16,9 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
 
         var allJobs = try await fetchAllPages(url: url, titleFilter: titleFilter, locationFilter: locationFilter, trackingData: trackingData, currentDate: currentDate)
 
-        if !locationFilter.lowercased().contains("remote") {
+        if shouldIncludeRemote(for: locationFilter),
+           !locationFilter.isEmpty,
+           !locationFilter.localizedCaseInsensitiveContains("remote") {
             let remoteJobs = try await fetchAllPages(url: url, titleFilter: titleFilter, locationFilter: "Remote", trackingData: trackingData, currentDate: currentDate)
             allJobs = allJobs.merging(remoteJobs)
         }
@@ -251,5 +253,12 @@ actor GoogleFetcher: URLBasedJobFetcherProtocol {
               match.numberOfRanges > 1,
               let range = Range(match.range(at: 1), in: html) else { return nil }
         return HTMLCleaner.cleanHTML(String(html[range]))
+    }
+
+    private func shouldIncludeRemote(for locationFilter: String) -> Bool {
+        if locationFilter.localizedCaseInsensitiveContains("remote") {
+            return true
+        }
+        return UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
     }
 }

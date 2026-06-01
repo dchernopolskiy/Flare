@@ -16,21 +16,16 @@ import Sparkle
 class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var statusItem: NSStatusItem?
     var popover = NSPopover()
+    /// Set by SwiftUI on first window appear — the only reliable way to show/recreate
+    /// a SwiftUI Window scene from outside the view hierarchy.
+    var openMainWindow: (() -> Void)?
     private var updaterController: SPUStandardUpdaterController?
     private var updateCheckTimer: Timer?
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
         setupSparkle()
         setupUpdateCheckTimer()
-
-        // Set ourselves as window delegate so we can intercept close → hide
-        DispatchQueue.main.async {
-            NSApplication.shared.windows.forEach { window in
-                guard window.title == "Flare" || window.isMainWindow else { return }
-                window.delegate = self
-            }
-        }
 
         // Listen for preference changes
         NotificationCenter.default.addObserver(
@@ -55,30 +50,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return false
+    }
+
+    func showMainWindow() {
         if let window = NSApplication.shared.windows.first(where: { $0.title == "Flare" || $0.isMainWindow }) {
             window.makeKeyAndOrderFront(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
+        } else {
+            // Window was fully closed by SwiftUI — recreate it via openWindow(id:)
+            openMainWindow?()
         }
-        return false  // Prevents SwiftUI from creating a new Window scene instance
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
-    
+
     func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
+
         if let button = statusItem?.button {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
             button.image = NSImage(systemSymbolName: "briefcase.fill", accessibilityDescription: "Job Monitor")?
                 .withSymbolConfiguration(config)
             button.action = #selector(togglePopover)
-            button.toolTip = "Microsoft Job Monitor"
+            button.toolTip = "Flare"
         }
     }
-    
+
     @objc func togglePopover() {
-        if let window = NSApplication.shared.windows.first {
-            window.makeKeyAndOrderFront(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
+        showMainWindow()
     }
 
     // MARK: - Sparkle Setup
@@ -129,14 +128,5 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @objc private func updateCheckPreferenceChanged() {
         updateCheckTimer?.invalidate()
         setupUpdateCheckTimer()
-    }
-}
-
-// MARK: - NSWindowDelegate
-extension AppDelegate: NSWindowDelegate {
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        // Hide instead of close so the window always exists for notification and reopen handling
-        sender.orderOut(nil)
-        return false
     }
 }

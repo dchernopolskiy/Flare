@@ -36,7 +36,7 @@ actor LLMParser {
         unloadTask?.cancel()
         unloadTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: UInt64(60 * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64((self?.unloadDelay ?? 60) * 1_000_000_000))
                 await self?.unloadIfIdle()
             } catch {}
         }

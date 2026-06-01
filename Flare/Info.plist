@@ -9,16 +9,16 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSExceptionDomains</key>
-		<dict>
-			<key>lifeattiktok.com</key>
-			<string></string>
+			<dict>
+				<key>lifeattiktok.com</key>
+				<dict/>
+			</dict>
 		</dict>
-	</dict>
 	<key>SUFeedURL</key>
 	<string>https://dchernopolskiy.github.io/Flare/Releases/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>bCyc3bVe4c/PTLmeYaI/1+4VoIC7zI3OWWvoj27c7ag=</string>
 	<key>SUEnableAutomaticChecks</key>
-	<string>True</string>
+	<true/>
 </dict>
 </plist>

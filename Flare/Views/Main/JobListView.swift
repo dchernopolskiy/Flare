@@ -99,6 +99,8 @@ struct JobListView: View {
         .onChange(of: showOnlyStarred) { _, _ in resetPagination(); filterPublisher.send() }
         .onChange(of: showOnlyApplied) { _, _ in resetPagination(); filterPublisher.send() }
         .onChange(of: jobManager.allJobs) { _, _ in updateFilteredJobs() }
+        .onChange(of: jobManager.starredJobIds) { _, _ in updateFilteredJobs() }
+        .onChange(of: jobManager.appliedJobIds) { _, _ in updateFilteredJobs() }
     }
 
     private func setupFilterDebouncing() {

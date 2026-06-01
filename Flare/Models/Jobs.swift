@@ -38,6 +38,12 @@ extension String {
 
 extension Array where Element == String {
     func includingRemote() -> [String] {
+        includingRemote(if: true)
+    }
+
+    func includingRemote(if shouldIncludeRemote: Bool) -> [String] {
+        guard shouldIncludeRemote, !isEmpty else { return self }
+
         let remoteKeywords = ["remote", "work from home", "distributed", "anywhere"]
         let hasRemoteKeyword = contains { keyword in
             remoteKeywords.contains { remote in
@@ -316,7 +322,7 @@ enum JobSource: String, Codable, CaseIterable {
 
     var isSupported: Bool {
         switch self {
-        case .microsoft, .apple, .google, .amazon, .tiktok, .greenhouse,
+        case .microsoft, .apple, .google, .tiktok, .greenhouse,
              .ashby, .lever, .snap, .amd, .meta, .workday, .icims, .taleo, .unknown:
             return true
         default:
@@ -549,4 +555,3 @@ class QualificationExtractor {
         return nil
     }
 }
-

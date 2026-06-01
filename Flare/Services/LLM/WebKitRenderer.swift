@@ -40,13 +40,27 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
             let interceptScript = """
             (function() {
                 window.__apiCalls = [];
+                function normalizeHeaders(headers) {
+                    const result = {};
+                    if (!headers) { return result; }
+                    try {
+                        if (headers instanceof Headers) {
+                            headers.forEach((value, key) => { result[key] = String(value); });
+                        } else if (Array.isArray(headers)) {
+                            headers.forEach(([key, value]) => { result[String(key)] = String(value); });
+                        } else {
+                            Object.keys(headers).forEach((key) => { result[key] = String(headers[key]); });
+                        }
+                    } catch (e) {}
+                    return result;
+                }
 
                 // Intercept fetch
                 const originalFetch = window.fetch;
                 window.fetch = function(...args) {
                     const url = typeof args[0] === 'string' ? args[0] : args[0].url;
                     const options = args[1] || {};
-                    const method = options.method || 'GET';
+                    const method = options.method || (args[0] && args[0].method) || 'GET';
 
                     let body = null;
                     if (options.body) {
@@ -61,27 +75,28 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                         }
                     }
 
-                    // Convert Headers object to plain object
-                    let headers = {};
-                    if (options.headers) {
-                        if (options.headers instanceof Headers) {
-                            options.headers.forEach((value, key) => {
-                                headers[key] = value;
-                            });
-                        } else {
-                            headers = options.headers;
-                        }
-                    }
-
-                    window.__apiCalls.push({
+                    const headers = normalizeHeaders(options.headers || (args[0] && args[0].headers));
+                    const call = {
                         url: url,
                         method: method,
                         body: body,
                         headers: headers,
-                        type: 'fetch'
-                    });
+                        type: 'fetch',
+                        response: null,
+                        status: null
+                    };
+                    window.__apiCalls.push(call);
 
-                    return originalFetch.apply(this, args);
+                    return originalFetch.apply(this, args).then((response) => {
+                        call.status = response.status;
+                        const contentType = response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '';
+                        if (contentType.includes('json') || contentType.includes('text')) {
+                            response.clone().text().then((text) => {
+                                call.response = text.slice(0, 1000000);
+                            }).catch(() => {});
+                        }
+                        return response;
+                    });
                 };
 
                 // Intercept XMLHttpRequest
@@ -89,19 +104,37 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                 XMLHttpRequest.prototype.open = function(method, url) {
                     this.__url = url;
                     this.__method = method;
+                    this.__headers = {};
                     return originalXHROpen.apply(this, arguments);
+                };
+
+                const originalXHRSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+                XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+                    this.__headers = this.__headers || {};
+                    this.__headers[String(header)] = String(value);
+                    return originalXHRSetRequestHeader.apply(this, arguments);
                 };
 
                 const originalXHRSend = XMLHttpRequest.prototype.send;
                 XMLHttpRequest.prototype.send = function(body) {
                     if (this.__url) {
-                        window.__apiCalls.push({
+                        const call = {
                             url: this.__url,
                             method: this.__method || 'GET',
                             body: body || null,
-                            headers: {},
-                            type: 'xhr'
+                            headers: this.__headers || {},
+                            type: 'xhr',
+                            response: null,
+                            status: null
+                        };
+                        this.addEventListener('loadend', function() {
+                            call.status = this.status;
+                            const contentType = this.getResponseHeader('content-type') || '';
+                            if (contentType.includes('json') || contentType.includes('text')) {
+                                call.response = String(this.responseText || '').slice(0, 1000000);
+                            }
                         });
+                        window.__apiCalls.push(call);
                     }
                     return originalXHRSend.apply(this, arguments);
                 };
@@ -237,7 +270,18 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
 
                         if isJobRelated && !isExcluded {
                             let body = call["body"] as? String
-                            let headers = call["headers"] as? [String: String]
+                            let headers: [String: String]?
+                            if let headerDict = call["headers"] as? [String: Any] {
+                                headers = Dictionary(uniqueKeysWithValues: headerDict.compactMap { key, value in
+                                    guard JSONSerialization.isValidJSONObject([key: value]) || value is String || value is NSNumber else {
+                                        return nil
+                                    }
+                                    return (key, String(describing: value))
+                                })
+                            } else {
+                                headers = nil
+                            }
+                            let response = call["response"] as? String
 
                             print("[WebKitRenderer] Detected API call: \(method) \(url)")
                             if let body = body {
@@ -249,7 +293,7 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                                 method: method,
                                 requestBody: body,
                                 headers: headers,
-                                response: nil
+                                response: response
                             ))
                         }
                     }

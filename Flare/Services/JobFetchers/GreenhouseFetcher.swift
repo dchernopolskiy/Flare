@@ -72,7 +72,8 @@ actor GreenhouseFetcher {
         fallbackFormatter.formatOptions = [.withInternetDateTime]
 
         let titleKeywords = titleFilter.parseAsFilterKeywords()
-        let locationKeywords = locationFilter.parseAsFilterKeywords().includingRemote()
+        let includeRemote = UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
+        let locationKeywords = locationFilter.parseAsFilterKeywords().includingRemote(if: includeRemote)
 
         let allJobs = decoded.jobs.compactMap { ghJob -> Job? in
             guard !ghJob.title.isEmpty, !ghJob.absolute_url.isEmpty else { return nil }

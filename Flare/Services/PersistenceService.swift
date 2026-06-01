@@ -30,6 +30,9 @@ actor PersistenceService {
     
     func loadJobs() async throws -> [Job] {
         let url = appSupportURL.appendingPathComponent("jobs.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return []
+        }
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode([Job].self, from: data)
     }
@@ -43,6 +46,9 @@ actor PersistenceService {
     
     func loadStoredJobIds() async throws -> Set<String> {
         let url = appSupportURL.appendingPathComponent("storedIds.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return Set<String>()
+        }
         let data = try Data(contentsOf: url)
         let ids = try JSONDecoder().decode([String].self, from: data)
         return Set(ids)
@@ -57,6 +63,9 @@ actor PersistenceService {
     
     func loadAppliedJobIds() async throws -> Set<String> {
         let url = appSupportURL.appendingPathComponent("appliedJobs.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return Set<String>()
+        }
         let data = try Data(contentsOf: url)
         let ids = try JSONDecoder().decode([String].self, from: data)
         return Set(ids)
@@ -71,6 +80,9 @@ actor PersistenceService {
     
     func loadBoardConfigs() async throws -> [JobBoardConfig] {
         let url = appSupportURL.appendingPathComponent("boardConfigs.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return []
+        }
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode([JobBoardConfig].self, from: data)
     }

@@ -23,7 +23,8 @@ actor iCIMSFetcher: URLBasedJobFetcherProtocol {
         }
 
         let titleKeywords = titleFilter.parseAsFilterKeywords()
-        let locationKeywords = locationFilter.parseAsFilterKeywords().includingRemote()
+        let includeRemote = UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
+        let locationKeywords = locationFilter.parseAsFilterKeywords().includingRemote(if: includeRemote)
         let filteredJobs = allJobs.applying(titleKeywords: titleKeywords, locationKeywords: locationKeywords)
 
         FetcherLog.info("iCIMS", "Fetched \(allJobs.count) total, \(filteredJobs.count) after filtering")

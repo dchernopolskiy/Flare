@@ -192,9 +192,12 @@ actor MicrosoftJobFetcher: JobFetcherProtocol {
                 URLQueryItem(name: "domain", value: "microsoft.com"),
                 URLQueryItem(name: "start", value: String(startIndex)),
                 URLQueryItem(name: "sort_by", value: "timestamp"),
-                URLQueryItem(name: "filter_distance", value: "160"),
-                URLQueryItem(name: "includeRemote", value: "1")
+                URLQueryItem(name: "filter_distance", value: "160")
             ]
+
+            if shouldIncludeRemote(for: location) {
+                components.queryItems?.append(URLQueryItem(name: "includeRemote", value: "1"))
+            }
             
             if !title.isEmpty {
                 components.queryItems?.append(URLQueryItem(name: "query", value: title))
@@ -250,6 +253,13 @@ actor MicrosoftJobFetcher: JobFetcherProtocol {
         print("Total jobs fetched: \(jobs.count)")
         
         return jobs
+    }
+
+    private func shouldIncludeRemote(for location: String) -> Bool {
+        if location.localizedCaseInsensitiveContains("remote") {
+            return true
+        }
+        return UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
     }
     
     private func parseResponse(_ data: Data) throws -> ([Job], Int) {

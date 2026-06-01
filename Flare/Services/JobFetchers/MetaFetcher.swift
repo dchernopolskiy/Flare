@@ -38,17 +38,18 @@ actor MetaFetcher: JobFetcherProtocol {
             currentDate: currentDate
         )
 
-        // Also fetch remote jobs and merge
-        let remoteJobs = try await fetchJobsPage(
-            query: query,
-            offices: [],
-            isRemoteOnly: true,
-            tokens: tokens,
-            trackingData: trackingData,
-            currentDate: currentDate
-        )
+        if shouldIncludeRemote(for: location) {
+            let remoteJobs = try await fetchJobsPage(
+                query: query,
+                offices: [],
+                isRemoteOnly: true,
+                tokens: tokens,
+                trackingData: trackingData,
+                currentDate: currentDate
+            )
 
-        allJobs = allJobs.merging(remoteJobs)
+            allJobs = allJobs.merging(remoteJobs)
+        }
 
         guard !allJobs.isEmpty else {
             throw FetchError.noJobs
@@ -56,6 +57,13 @@ actor MetaFetcher: JobFetcherProtocol {
 
         await trackingService.saveTrackingData(allJobs, for: "meta", currentDate: currentDate, retentionDays: 30)
         return allJobs
+    }
+
+    private func shouldIncludeRemote(for location: String) -> Bool {
+        if location.localizedCaseInsensitiveContains("remote") {
+            return true
+        }
+        return UserDefaults.standard.object(forKey: "includeRemoteJobs") as? Bool ?? true
     }
     
     private func extractPageTokens() async throws -> PageTokens {

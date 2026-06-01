@@ -100,10 +100,10 @@ class JobBoardMonitor: ObservableObject {
         }
     }
     
-    func startMonitoring() async {
+    func startMonitoring(interval: TimeInterval = 30 * 60) {
         monitorTimer?.invalidate()
         
-        monitorTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { _ in
+        monitorTimer = Timer.scheduledTimer(withTimeInterval: max(60, interval), repeats: true) { _ in
             Task { [weak self] in
                 await self?.fetchAllBoardJobs()
             }
@@ -373,11 +373,12 @@ class JobBoardMonitor: ObservableObject {
 
                 var jobURL = url.absoluteString
                 if let urlStr = schema["url"] as? String {
-                    jobURL = urlStr.hasPrefix("http") ? urlStr : "\(url.scheme ?? "https")://\(url.host ?? "")\(urlStr)"
+                    jobURL = resolveURL(urlStr, relativeTo: url) ?? url.absoluteString
                 }
+                let company = (schema["hiringOrganization"] as? [String: Any])?["name"] as? String
 
                 jobs.append(Job(
-                    id: "schema-\(UUID().uuidString)",
+                    id: stableExtractedJobID(prefix: "schema", url: jobURL, title: title, location: location, companyName: company),
                     title: title,
                     location: location,
                     postingDate: nil,
@@ -385,7 +386,7 @@ class JobBoardMonitor: ObservableObject {
                     description: schema["description"] as? String ?? "",
                     workSiteFlexibility: nil,
                     source: .unknown,
-                    companyName: (schema["hiringOrganization"] as? [String: Any])?["name"] as? String,
+                    companyName: company,
                     department: nil,
                     category: nil,
                     firstSeenDate: Date(),
@@ -420,12 +421,13 @@ class JobBoardMonitor: ObservableObject {
                 let skip = ["next", "prev", "page", "load more", "view all", "apply"]
                 if skip.contains(where: { title.lowercased().contains($0) }) || title.count < 5 { continue }
 
-                let fullUrl = jobUrl.hasPrefix("http") ? jobUrl : "\(url.scheme ?? "https")://\(url.host ?? "")\(jobUrl)"
+                let fullUrl = resolveURL(jobUrl, relativeTo: url) ?? url.absoluteString
                 if seenURLs.contains(fullUrl) { continue }
                 seenURLs.insert(fullUrl)
+                let company = companyName(from: url)
 
                 jobs.append(Job(
-                    id: "html-\(UUID().uuidString)",
+                    id: stableExtractedJobID(prefix: "html", url: fullUrl, title: title, location: "Not specified", companyName: company),
                     title: title,
                     location: "Not specified",
                     postingDate: nil,
@@ -433,7 +435,7 @@ class JobBoardMonitor: ObservableObject {
                     description: "",
                     workSiteFlexibility: nil,
                     source: .unknown,
-                    companyName: url.host?.replacingOccurrences(of: "www.", with: "").components(separatedBy: ".").first?.capitalized,
+                    companyName: company,
                     department: nil,
                     category: nil,
                     firstSeenDate: Date(),
@@ -445,6 +447,45 @@ class JobBoardMonitor: ObservableObject {
             if !jobs.isEmpty { break }
         }
         return jobs
+    }
+
+    private func resolveURL(_ rawURL: String, relativeTo baseURL: URL) -> String? {
+        URL(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines), relativeTo: baseURL)?.absoluteURL.absoluteString
+    }
+
+    private func stableExtractedJobID(prefix: String, url: String, title: String, location: String, companyName: String?) -> String {
+        let seed = [
+            canonicalURL(url),
+            companyName ?? "",
+            title,
+            location
+        ]
+        .map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
+        .joined(separator: "|")
+
+        let hash = seed.sha256() ?? seed
+        return "\(prefix)-\(String(hash.prefix(24)))"
+    }
+
+    private func canonicalURL(_ urlString: String) -> String {
+        guard var components = URLComponents(string: urlString) else { return urlString }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        components.queryItems = components.queryItems?.filter { !$0.name.lowercased().hasPrefix("utm_") }
+        return components.string ?? urlString
+    }
+
+    private func companyName(from url: URL) -> String {
+        guard let host = url.host else { return "Unknown Company" }
+        return host
+            .replacingOccurrences(of: "www.", with: "")
+            .replacingOccurrences(of: "careers.", with: "")
+            .replacingOccurrences(of: "jobs.", with: "")
+            .components(separatedBy: ".")
+            .first?
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized ?? "Unknown Company"
     }
 
     private func fetchJobsForSource(_ source: JobSource, url: URL) async throws -> [Job] {
@@ -587,6 +628,10 @@ class JobBoardMonitor: ObservableObject {
                 jobs = try await leverFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
             case "ashby":
                 jobs = try await ashbyFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
+            case "icims":
+                jobs = try await icimsFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
+            case "taleo":
+                jobs = try await taleoFetcher.fetchJobs(from: atsURL, titleFilter: titleFilter, locationFilter: locationFilter)
             default:
                 jobs = []
             }

@@ -111,17 +111,7 @@ extension NotificationService: UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         if let jobId = userInfo["jobId"] as? String {
             Task { @MainActor in
-                // Bring app to front
-                NSApplication.shared.activate(ignoringOtherApps: true)
-
-                // Find and show the main window
-                if let window = NSApplication.shared.windows.first(where: { $0.title == "Flare" || $0.isMainWindow }) {
-                    window.makeKeyAndOrderFront(nil)
-                } else if let window = NSApplication.shared.windows.first {
-                    window.makeKeyAndOrderFront(nil)
-                }
-
-                // Select the job
+                (NSApplication.shared.delegate as? AppDelegate)?.showMainWindow()
                 JobManager.shared.selectJob(withId: jobId)
             }
         }

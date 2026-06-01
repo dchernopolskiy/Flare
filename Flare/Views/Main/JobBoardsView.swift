@@ -190,7 +190,7 @@ struct AddBoardSection: View {
 
     private var isValidURL: Bool {
         guard !newBoardURL.isEmpty else { return false }
-        return URL(string: newBoardURL) != nil
+        return JobBoardConfig.normalizedURLString(newBoardURL) != nil
     }
 
     var body: some View {
@@ -257,7 +257,8 @@ struct AddBoardSection: View {
     }
 
     private func startDetection() {
-        guard let url = URL(string: newBoardURL) else { return }
+        guard let normalizedURL = JobBoardConfig.normalizedURLString(newBoardURL),
+              let url = URL(string: normalizedURL) else { return }
 
         // Reset state before starting
         detectionFailed = false
@@ -288,11 +289,12 @@ struct AddBoardSection: View {
 
     private func addBoard(with preview: JobBoardMonitor.DetectionPreview) {
         let finalUrl = preview.queryURL
+        guard let normalizedBoardURL = JobBoardConfig.normalizedURLString(newBoardURL) else { return }
 
         guard var config = JobBoardConfig(
             name: newBoardName.isEmpty ? extractCompanyName(from: finalUrl) : newBoardName,
-            url: newBoardURL,
-            detectedATSURL: preview.queryURL != newBoardURL ? preview.queryURL : nil,
+            url: normalizedBoardURL,
+            detectedATSURL: preview.queryURL != normalizedBoardURL ? preview.queryURL : nil,
             detectedATSType: preview.atsType,
             parsingMethod: preview.parsingMethod
         ) else { return }
@@ -625,4 +627,3 @@ struct JobBoardsDocument: FileDocument {
         return FileWrapper(regularFileWithContents: data)
     }
 }
-

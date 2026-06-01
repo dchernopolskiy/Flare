@@ -23,8 +23,9 @@ struct DiscoveredAPISchema: Codable {
     let lastAttempt: Date  // Last time we tried to parse this domain
     var lastFetchedAt: Date?  // Last time we successfully fetched jobs
     var htmlExtractionWorks: Bool  // Whether direct HTML extraction successfully found jobs
+    var simpleAPIExtractionWorks: Bool  // Whether a non-LLM API extraction succeeded
 
-    init(domain: String, endpoint: String, method: String, requestBody: String?, requestHeaders: [String: String]?, responseStructure: JobResponseStructure, paginationInfo: PaginationInfo?, sortInfo: SortInfo?, discoveredAt: Date, llmAttempted: Bool, schemaDiscovered: Bool, lastAttempt: Date, lastFetchedAt: Date?, htmlExtractionWorks: Bool = false) {
+    init(domain: String, endpoint: String, method: String, requestBody: String?, requestHeaders: [String: String]?, responseStructure: JobResponseStructure, paginationInfo: PaginationInfo?, sortInfo: SortInfo?, discoveredAt: Date, llmAttempted: Bool, schemaDiscovered: Bool, lastAttempt: Date, lastFetchedAt: Date?, htmlExtractionWorks: Bool = false, simpleAPIExtractionWorks: Bool = false) {
         self.domain = domain
         self.endpoint = endpoint
         self.method = method
@@ -39,6 +40,7 @@ struct DiscoveredAPISchema: Codable {
         self.lastAttempt = lastAttempt
         self.lastFetchedAt = lastFetchedAt
         self.htmlExtractionWorks = htmlExtractionWorks
+        self.simpleAPIExtractionWorks = simpleAPIExtractionWorks
     }
 
     // For decoding existing cache entries without htmlExtractionWorks
@@ -58,6 +60,7 @@ struct DiscoveredAPISchema: Codable {
         lastAttempt = try container.decode(Date.self, forKey: .lastAttempt)
         lastFetchedAt = try container.decodeIfPresent(Date.self, forKey: .lastFetchedAt)
         htmlExtractionWorks = try container.decodeIfPresent(Bool.self, forKey: .htmlExtractionWorks) ?? false
+        simpleAPIExtractionWorks = try container.decodeIfPresent(Bool.self, forKey: .simpleAPIExtractionWorks) ?? false
     }
 }
 
@@ -218,39 +221,40 @@ actor APISchemaCache {
     }
 
     /// Mark that simple API extraction works for this domain (when LLM schema discovery failed but simple extraction succeeded)
-    func markSimpleAPIExtractionWorks(for domain: String, apiEndpoint: String) {
-        if var schema = cache[domain] {
-            schema.htmlExtractionWorks = true  // Reuse this flag since it triggers fast path
-            schema.lastFetchedAt = Date()
-            cache[domain] = schema
-        } else {
-            // Create a minimal schema entry to mark simple extraction works
-            let schema = DiscoveredAPISchema(
-                domain: domain,
-                endpoint: apiEndpoint,
-                method: "GET",
-                requestBody: nil,
-                requestHeaders: nil,
-                responseStructure: JobResponseStructure(
-                    jobsArrayPath: "",
-                    titleField: "",
-                    locationField: nil,
-                    urlField: nil,
-                    urlTemplate: nil,
-                    paginationParam: nil,
-                    pageSizeParam: nil
-                ),
-                paginationInfo: nil,
-                sortInfo: nil,
-                discoveredAt: Date(),
-                llmAttempted: true,
-                schemaDiscovered: false,
-                lastAttempt: Date(),
-                lastFetchedAt: Date(),
-                htmlExtractionWorks: true  // Reuse this flag to trigger fast path
-            )
-            cache[domain] = schema
-        }
+    func markSimpleAPIExtractionWorks(
+        for domain: String,
+        apiEndpoint: String,
+        method: String = "GET",
+        requestBody: String? = nil,
+        requestHeaders: [String: String]? = nil
+    ) {
+        let existing = cache[domain]
+        let schema = DiscoveredAPISchema(
+            domain: domain,
+            endpoint: apiEndpoint,
+            method: method,
+            requestBody: requestBody,
+            requestHeaders: requestHeaders,
+            responseStructure: existing?.responseStructure ?? JobResponseStructure(
+                jobsArrayPath: "",
+                titleField: "",
+                locationField: nil,
+                urlField: nil,
+                urlTemplate: nil,
+                paginationParam: nil,
+                pageSizeParam: nil
+            ),
+            paginationInfo: existing?.paginationInfo,
+            sortInfo: existing?.sortInfo,
+            discoveredAt: existing?.discoveredAt ?? Date(),
+            llmAttempted: true,
+            schemaDiscovered: existing?.schemaDiscovered ?? false,
+            lastAttempt: Date(),
+            lastFetchedAt: Date(),
+            htmlExtractionWorks: existing?.htmlExtractionWorks ?? false,
+            simpleAPIExtractionWorks: true
+        )
+        cache[domain] = schema
         persistCache()
         print("[APISchemaCache] Marked simple API extraction works for \(domain) at \(apiEndpoint)")
     }
