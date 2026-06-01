@@ -60,3 +60,8 @@ Flare.xcodeproj/project.pbxproj
 /BackupData
 /Leaks 1.trace
 /Trace1.trace
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

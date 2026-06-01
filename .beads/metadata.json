@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "flare",
+  "project_id": "3e6fa31a-3045-47c9-8b2e-4edf953fbd8f"
+}
