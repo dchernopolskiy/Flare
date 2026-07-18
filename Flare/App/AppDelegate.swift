@@ -20,14 +20,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// a SwiftUI Window scene from outside the view hierarchy.
     var openMainWindow: (() -> Void)?
     private var updaterController: SPUStandardUpdaterController?
-    private var updateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
         setupSparkle()
-        setupUpdateCheckTimer()
 
-        // Listen for preference changes
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(updateCheckPreferenceChanged),
@@ -41,7 +38,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        updateCheckTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
     
@@ -80,41 +76,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         showMainWindow()
     }
 
-    // MARK: - Sparkle Setup
     private func setupSparkle() {
-        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-    }
-
-    private func setupUpdateCheckTimer() {
+        updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
         Task { @MainActor in
-            guard JobManager.shared.autoCheckForUpdates else { return }
-            let calendar = Calendar.current
-            var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: Date())
-            components.hour = 10
-            components.minute = 0
-            guard let nextCheckTime = calendar.date(from: components) else { return }
-
-            let scheduledTime = nextCheckTime > Date() ? nextCheckTime : calendar.date(byAdding: .day, value: 1, to: nextCheckTime)!
-
-            await MainActor.run {
-                self.updateCheckTimer = Timer(fire: scheduledTime, interval: 24 * 60 * 60, repeats: true) { [weak self] _ in
-                    self?.performDailyUpdateCheck()
-                }
-
-                if let timer = self.updateCheckTimer {
-                    RunLoop.main.add(timer, forMode: .common)
-                }
-            }
+            self.syncAutomaticUpdateChecks()
+            self.updaterController?.startUpdater()
         }
     }
 
-    private func performDailyUpdateCheck() {
-        Task { @MainActor in
-            guard JobManager.shared.autoCheckForUpdates else { return }
-            await MainActor.run {
-                self.updaterController?.updater.checkForUpdatesInBackground()
-            }
-        }
+    @MainActor
+    private func syncAutomaticUpdateChecks() {
+        updaterController?.updater.automaticallyChecksForUpdates = JobManager.shared.autoCheckForUpdates
     }
 
     func checkForUpdatesNow() {
@@ -126,7 +98,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     @objc private func updateCheckPreferenceChanged() {
-        updateCheckTimer?.invalidate()
-        setupUpdateCheckTimer()
+        Task { @MainActor in
+            self.syncAutomaticUpdateChecks()
+        }
     }
 }

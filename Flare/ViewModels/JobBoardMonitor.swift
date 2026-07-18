@@ -27,6 +27,7 @@ class JobBoardMonitor: ObservableObject {
         let parsingMethod: ParsingMethod
         let queryURL: String
         let atsType: String?
+        let evidenceSummary: String?
     }
 
     private let persistenceService = PersistenceService.shared
@@ -62,7 +63,6 @@ class JobBoardMonitor: ObservableObject {
     }
     
     func addBoardConfig(_ config: JobBoardConfig) {
-        // Prevent duplicates by checking URL
         guard !boardConfigs.contains(where: { $0.url == config.url }) else {
             print("[JobBoardMonitor] Board with URL '\(config.url)' already exists, skipping")
             return
@@ -75,10 +75,8 @@ class JobBoardMonitor: ObservableObject {
     }
     
     func removeBoardConfig(at index: Int) {
-        // Get the URL before removing to clear the LLM cache for this domain
         let config = boardConfigs[index]
         if let url = URL(string: config.url), let domain = url.host {
-            // Clear any cached LLM failure for this domain so re-adding will retry LLM
             Task {
                 await APISchemaCache.shared.clearSchema(for: domain)
                 print("[JobBoardMonitor] Cleared LLM cache for \(domain)")
@@ -142,7 +140,6 @@ class JobBoardMonitor: ObservableObject {
 
         let urlString = url.absoluteString
 
-        // Check if it's a direct ATS link
         if let source = JobSource.detectFromURL(urlString), source != .unknown, source.isSupported {
             await MainActor.run { detectionStatus = "Detected \(source.rawValue), fetching jobs..." }
 
@@ -153,14 +150,14 @@ class JobBoardMonitor: ObservableObject {
                     jobCount: jobs.count,
                     parsingMethod: .directATS,
                     queryURL: urlString,
-                    atsType: source.rawValue.lowercased()
+                    atsType: source.rawValue.lowercased(),
+                    evidenceSummary: "Recognized from the board address."
                 )
             } catch {
                 print("[Detection] Direct ATS fetch error: \(error)")
             }
         }
 
-        // Try Radancy API pattern early (before ATS detection) - fast and common
         await MainActor.run { detectionStatus = "Checking for API patterns..." }
         if let radancyResult = await tryRadancyAPIDetection(url: url) {
             await MainActor.run { detectionInProgress = false }
@@ -184,7 +181,8 @@ class JobBoardMonitor: ObservableObject {
                         jobCount: jobs.count,
                         parsingMethod: .directATS,
                         queryURL: atsURL,
-                        atsType: atsType.rawValue.lowercased()
+                        atsType: atsType.rawValue.lowercased(),
+                        evidenceSummary: summary(of: result.evidence)
                     )
                 }
             }
@@ -194,7 +192,6 @@ class JobBoardMonitor: ObservableObject {
 
         await MainActor.run { detectionStatus = "Trying JSON and API extraction..." }
 
-        // Try quick extraction without LLM first
         do {
             let html = try await fetchHTMLForDetection(url: url)
             let jobs = extractJobsWithoutLLM(html: html, url: url)
@@ -206,14 +203,16 @@ class JobBoardMonitor: ObservableObject {
                     jobCount: jobs.count,
                     parsingMethod: method,
                     queryURL: urlString,
-                    atsType: nil
+                    atsType: nil,
+                    evidenceSummary: method == .embeddedJSON
+                        ? "Found inline job records with application links."
+                        : "Read directly from the page's structured job data."
                 )
             }
         } catch {
             print("[Detection] Quick extraction error: \(error)")
         }
 
-        // Use SmartJobParser with LLM if enabled - show progress
         let isLLMEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
         if isLLMEnabled {
             await MainActor.run { detectionStatus = "AI analyzing page structure..." }
@@ -222,8 +221,10 @@ class JobBoardMonitor: ObservableObject {
                 from: url,
                 titleFilter: "",
                 locationFilter: "",
-                statusCallback: { @MainActor [weak self] status in
-                    self?.detectionStatus = status
+                statusCallback: { [weak self] status in
+                    Task { @MainActor [weak self] in
+                        self?.detectionStatus = status
+                    }
                 }
             )
 
@@ -234,7 +235,8 @@ class JobBoardMonitor: ObservableObject {
                     jobCount: jobs.count,
                     parsingMethod: method.rawValue.contains("AI") ? method : .llmExtraction,
                     queryURL: urlString,
-                    atsType: nil
+                    atsType: nil,
+                    evidenceSummary: "Confirmed by the page parser after deterministic checks found no compatible ATS."
                 )
             }
         }
@@ -295,7 +297,8 @@ class JobBoardMonitor: ObservableObject {
                     jobCount: jobCount,
                     parsingMethod: .apiDiscovery,
                     queryURL: apiURL.absoluteString,
-                    atsType: "radancy"
+                    atsType: "radancy",
+                    evidenceSummary: "Verified a live Radancy job feed."
                 )
             }
         } catch {
@@ -303,6 +306,16 @@ class JobBoardMonitor: ObservableObject {
         }
 
         return nil
+    }
+
+    private func summary(of evidence: [ATSDetectorService.DetectionResult.Evidence]) -> String? {
+        let strongest = evidence
+            .sorted { $0.weight > $1.weight }
+            .prefix(2)
+            .map { "\($0.kind): \($0.detail)" }
+
+        guard !strongest.isEmpty else { return nil }
+        return strongest.joined(separator: " · ")
     }
 
     private func fetchHTMLForDetection(url: URL) async throws -> String {
@@ -321,11 +334,14 @@ class JobBoardMonitor: ObservableObject {
     private func extractJobsWithoutLLM(html: String, url: URL) -> [Job] {
         var allJobs: [Job] = []
 
-        // Schema.org extraction
-        let schemaJobs = extractSchemaOrgJobs(html: html, url: url)
-        allJobs.append(contentsOf: schemaJobs)
+        let embeddedJobs = extractEmbeddedApplicationJobs(html: html, url: url)
+        allJobs.append(contentsOf: embeddedJobs)
 
-        // Try HTML patterns for job links
+        let schemaJobs = extractSchemaOrgJobs(html: html, url: url)
+        for job in schemaJobs where !allJobs.contains(where: { $0.url == job.url }) {
+            allJobs.append(job)
+        }
+
         let patternJobs = extractJobLinksFromHTML(html: html, url: url)
         for job in patternJobs {
             if !allJobs.contains(where: { $0.url == job.url }) {
@@ -334,6 +350,134 @@ class JobBoardMonitor: ObservableObject {
         }
 
         return allJobs
+    }
+
+    private func extractEmbeddedApplicationJobs(html: String, url: URL) -> [Job] {
+        let pattern = #""(?:applyUrl|applyURL|apply_url)"\s*:\s*"((?:\\.|[^"\\])*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+
+        let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+        var jobs: [Job] = []
+        var seenURLs = Set<String>()
+        let company = companyName(from: url)
+
+        for match in matches {
+            guard let object = embeddedJSONObject(containing: match.range, in: html),
+                  let rawApplyURL = string(in: object, keys: ["applyUrl", "applyURL", "apply_url"]),
+                  let applyURL = resolveURL(rawApplyURL, relativeTo: url),
+                  let title = string(in: object, keys: ["title", "jobTitle", "name"]),
+                  title.count >= 5,
+                  !seenURLs.contains(applyURL) else {
+                continue
+            }
+
+            seenURLs.insert(applyURL)
+            let location = string(in: object, keys: ["location", "cityStateCountry", "cityState", "address"])
+                ?? "Not specified"
+            let description = string(in: object, keys: ["description", "descriptionTeaser"])
+                ?? nestedString(in: object, path: ["ml_job_parser", "descriptionTeaser"])
+                ?? ""
+
+            jobs.append(Job(
+                id: stableExtractedJobID(prefix: "embedded", url: applyURL, title: title, location: location, companyName: company),
+                title: title,
+                location: location,
+                postingDate: nil,
+                url: applyURL,
+                description: description,
+                workSiteFlexibility: nil,
+                source: .unknown,
+                companyName: company,
+                department: string(in: object, keys: ["department", "businessUnit"]),
+                category: string(in: object, keys: ["category", "jobCategory"]),
+                firstSeenDate: Date(),
+                originalPostingDate: nil,
+                wasBumped: false
+            ))
+        }
+
+        return jobs
+    }
+
+    private func embeddedJSONObject(containing matchRange: NSRange, in html: String) -> [String: Any]? {
+        guard let matchIndex = Range(matchRange, in: html)?.lowerBound else { return nil }
+        var objectStarts: [String.Index] = []
+        var index = html.startIndex
+        var isInsideString = false
+        var isEscaping = false
+
+        while index < matchIndex {
+            let character = html[index]
+            if isInsideString {
+                if isEscaping {
+                    isEscaping = false
+                } else if character == "\\" {
+                    isEscaping = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+            } else if character == "\"" {
+                isInsideString = true
+            } else if character == "{" {
+                objectStarts.append(index)
+            } else if character == "}", !objectStarts.isEmpty {
+                objectStarts.removeLast()
+            }
+            index = html.index(after: index)
+        }
+
+        guard let objectStart = objectStarts.last,
+              let jsonEnd = endOfJSONObject(startingAt: objectStart, in: html) else {
+            return nil
+        }
+
+        let jsonString = String(html[objectStart...jsonEnd])
+        guard let data = jsonString.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private func endOfJSONObject(startingAt start: String.Index, in html: String) -> String.Index? {
+        var depth = 0
+        var index = start
+        var isInsideString = false
+        var isEscaping = false
+
+        while index < html.endIndex {
+            let character = html[index]
+            if isInsideString {
+                if isEscaping {
+                    isEscaping = false
+                } else if character == "\\" {
+                    isEscaping = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+            } else if character == "\"" {
+                isInsideString = true
+            } else if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 { return index }
+            }
+            index = html.index(after: index)
+        }
+
+        return nil
+    }
+
+    private func string(in object: [String: Any], keys: [String]) -> String? {
+        keys.lazy
+            .compactMap { object[$0] as? String }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
+    private func nestedString(in object: [String: Any], path: [String]) -> String? {
+        guard let firstKey = path.first else { return nil }
+        if path.count == 1 { return object[firstKey] as? String }
+        guard let child = object[firstKey] as? [String: Any] else { return nil }
+        return nestedString(in: child, path: Array(path.dropFirst()))
     }
 
     private func extractSchemaOrgJobs(html: String, url: URL) -> [Job] {
@@ -510,7 +654,7 @@ class JobBoardMonitor: ObservableObject {
     private func determineParsingMethod(from jobs: [Job]) -> ParsingMethod {
         guard let firstId = jobs.first?.id else { return .unknown }
         if firstId.hasPrefix("schema-") { return .schemaOrg }
-        if firstId.hasPrefix("next-") || firstId.hasPrefix("preload-") || firstId.hasPrefix("initial-") { return .embeddedJSON }
+        if firstId.hasPrefix("embedded-") || firstId.hasPrefix("next-") || firstId.hasPrefix("preload-") || firstId.hasPrefix("initial-") { return .embeddedJSON }
         if firstId.hasPrefix("api-") || firstId.hasPrefix("llm-api-") { return .apiDiscovery }
         if firstId.hasPrefix("llm-") { return .llmExtraction }
         if firstId.hasPrefix("html-") { return .htmlPatterns }
@@ -576,7 +720,6 @@ class JobBoardMonitor: ObservableObject {
             let isEnabled = parts.count > 2 ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "enabled" : true
             
             if let config = JobBoardConfig(name: name, url: url, isEnabled: isEnabled) {
-                // Check if already exists
                 if !boardConfigs.contains(where: { $0.url == config.url }) {
                     addBoardConfig(config)
                     addedCount += 1
@@ -596,18 +739,15 @@ class JobBoardMonitor: ObservableObject {
             throw FetchError.invalidURL
         }
 
-        // Check if we have a previously detected ATS URL (e.g., Workday found via GTM)
-        // First check the config, then check the runtime cache
         var detectedATSURL = config.detectedATSURL
         var detectedATSType = config.detectedATSType
 
-        // Check runtime cache if not in config
         var needsPersist = false
         if detectedATSURL == nil, let domain = url.host {
             if let cached = await DetectedATSCache.shared.get(for: domain) {
                 detectedATSURL = cached.atsURL
                 detectedATSType = cached.atsType
-                needsPersist = true  // Found in runtime cache but not in config - need to persist
+                needsPersist = true
                 print("[JobBoard] Found ATS in runtime cache: \(cached.atsType) at \(cached.atsURL)")
             }
         }
@@ -671,22 +811,20 @@ class JobBoardMonitor: ObservableObject {
         case .taleo:
             return try await taleoFetcher.fetchJobs(from: url, titleFilter: titleFilter, locationFilter: locationFilter)
         default:
-            // Use SmartJobParser for unknown sources (falls back to LLM if enabled)
-            // Pass status callback to show parsing progress
             let configId = config.id
             let jobs = await smartParser.parseJobs(
                 from: url,
                 titleFilter: titleFilter,
                 locationFilter: locationFilter,
-                statusCallback: { @MainActor [weak self] status in
-                    self?.parsingStatus[configId] = status
+                statusCallback: { [weak self] status in
+                    Task { @MainActor [weak self] in
+                        self?.parsingStatus[configId] = status
+                    }
                 }
             )
 
-            // After parsing, check if we detected an ATS URL and persist it to config
             if !jobs.isEmpty, let domain = url.host {
                 if let cached = await DetectedATSCache.shared.get(for: domain) {
-                    // Persist detected ATS to config for future refreshes
                     var updatedConfig = config
                     updatedConfig.detectedATSURL = cached.atsURL
                     updatedConfig.detectedATSType = cached.atsType

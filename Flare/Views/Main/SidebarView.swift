@@ -15,11 +15,22 @@ struct SidebarView: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            // Header with toggle
             HStack {
-                Image(systemName: "briefcase.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(.accentColor)
+                HStack(spacing: 8) {
+                    Image("FlareMascot")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 30, height: 30)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("FLARE")
+                            .font(.system(size: 15, weight: .black, design: .rounded))
+                            .tracking(1.2)
+                            .foregroundStyle(FlareVisual.paper)
+                        Text("JOB DESK")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundStyle(FlareVisual.fadedInk)
+                    }
+                }
                 
                 Spacer()
                 
@@ -30,13 +41,12 @@ struct SidebarView: View {
                 }) {
                     Image(systemName: "sidebar.left")
                         .font(.title3)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(FlareVisual.paper.opacity(0.64))
                 }
                 .buttonStyle(.plain)
                 .help("Hide Sidebar")
             }
             
-            // Navigation Buttons
             VStack(spacing: 10) {
                 SidebarButton(
                     title: "Jobs",
@@ -83,7 +93,6 @@ struct SidebarView: View {
             
             Spacer()
             
-            // Loading Indicator
             if jobManager.isLoading {
                 VStack(spacing: 4) {
                     ProgressView()
@@ -91,7 +100,7 @@ struct SidebarView: View {
                     if !jobManager.loadingProgress.isEmpty {
                         Text(jobManager.loadingProgress)
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(FlareVisual.paper.opacity(0.64))
                             .multilineTextAlignment(.center)
                             .lineLimit(3)
                     }
@@ -99,45 +108,45 @@ struct SidebarView: View {
                 .padding(.horizontal, 4)
             }
             
-            // Statistics
             VStack(spacing: 8) {
                 if jobManager.newJobsCount > 0 {
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(Color.green)
+                            .fill(FlareVisual.moss)
                             .frame(width: 8, height: 8)
                         Text("\(jobManager.newJobsCount) new")
                             .font(.caption)
                             .fontWeight(.semibold)
-                            .foregroundColor(.green)
+                            .foregroundColor(FlareVisual.moss)
                     }
                 }
                 
                 Text("\(jobManager.allJobs.count) recent jobs")
                     .font(.caption)
                     .fontWeight(.medium)
+                    .foregroundStyle(FlareVisual.paper)
                 
                 if !jobManager.fetchStatistics.summary.isEmpty {
                     Text(jobManager.fetchStatistics.summary)
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(FlareVisual.paper.opacity(0.64))
                         .multilineTextAlignment(.center)
                 }
                 
                 if let lastFetch = jobManager.fetchStatistics.lastFetchTime {
                     Text("Updated \(lastFetch, style: .relative)")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(FlareVisual.paper.opacity(0.64))
                 }
             }
             .padding(.horizontal, 4)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(FlareVisual.ink)
         .overlay(
             Rectangle()
                 .frame(width: 1)
-                .foregroundColor(Color(NSColor.separatorColor)),
+                .foregroundColor(FlareVisual.brass.opacity(0.45)),
             alignment: .trailing
         )
     }
@@ -156,6 +165,7 @@ struct SidebarButton: View {
                 Image(systemName: icon)
                     .frame(width: 20)
                 Text(title)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
                 Spacer()
                 if let badge = badge {
                     Text(badge)
@@ -163,14 +173,13 @@ struct SidebarButton: View {
                         .fontWeight(.medium)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.2))
-                        .cornerRadius(8)
+                        .background(FlareVisual.brass.opacity(0.25), in: Capsule())
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
-            .cornerRadius(8)
+            .foregroundStyle(isSelected ? FlareVisual.paper : FlareVisual.paper.opacity(0.72))
+            .background(isSelected ? FlareVisual.ember.opacity(0.78) : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

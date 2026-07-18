@@ -319,3 +319,32 @@ struct DateFilterTests {
         #expect(discoveryAge <= discoveryCutoff)
     }
 }
+
+// MARK: - Persistence Tests
+
+struct PersistenceServiceTests {
+
+    @Test func cacheCleanupRemovesOnlyRebuildableJobState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flare-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let service = try PersistenceService(appSupportURL: directory)
+        try await service.saveJobs([])
+        try await service.saveStoredJobIds(["seen-job"])
+        try await service.saveAppliedJobIds(["applied-job"])
+        try await service.saveStarredJobIds(["starred-job"])
+
+        let trackerURL = directory.appendingPathComponent("greenhouseacmeJobTracking.json")
+        try Data("[]".utf8).write(to: trackerURL)
+
+        let result = try await service.clearJobCache()
+
+        #expect(result.filesRemoved == 3)
+        #expect((try await service.loadJobs()).isEmpty)
+        #expect((try await service.loadStoredJobIds()).isEmpty)
+        #expect(try await service.loadAppliedJobIds() == ["applied-job"])
+        #expect(try await service.loadStarredJobIds() == ["starred-job"])
+        #expect(!FileManager.default.fileExists(atPath: trackerURL.path))
+    }
+}

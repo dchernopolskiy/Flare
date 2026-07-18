@@ -42,15 +42,27 @@ enum JobExtractionPatterns {
 actor DetectedATSCache {
     static let shared = DetectedATSCache()
 
-    private var cache: [String: (atsURL: String, atsType: String)] = [:]
+    private struct Entry {
+        let atsURL: String
+        let atsType: String
+        let verifiedAt: Date
+    }
+
+    private let lifetime: TimeInterval = 7 * 24 * 60 * 60
+    private var cache: [String: Entry] = [:]
 
     func store(for domain: String, atsURL: String, atsType: String) {
-        cache[domain] = (atsURL, atsType)
+        cache[domain] = Entry(atsURL: atsURL, atsType: atsType, verifiedAt: Date())
         print("[DetectedATSCache] Stored \(atsType) at \(atsURL) for \(domain)")
     }
 
     func get(for domain: String) -> (atsURL: String, atsType: String)? {
-        return cache[domain]
+        guard let entry = cache[domain] else { return nil }
+        guard Date().timeIntervalSince(entry.verifiedAt) < lifetime else {
+            cache.removeValue(forKey: domain)
+            return nil
+        }
+        return (entry.atsURL, entry.atsType)
     }
 
     func clear(for domain: String) {

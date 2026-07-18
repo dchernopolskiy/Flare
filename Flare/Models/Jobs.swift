@@ -224,6 +224,16 @@ struct Job: Identifiable, Codable, Equatable {
     var applyButtonText: String {
         source.applyButtonText
     }
+
+    func replacingDescription(with description: String) -> Job {
+        Job(
+            id: id, title: title, location: location, postingDate: postingDate,
+            url: url, description: description, workSiteFlexibility: workSiteFlexibility,
+            source: source, companyName: companyName, department: department,
+            category: category, firstSeenDate: firstSeenDate,
+            originalPostingDate: originalPostingDate, wasBumped: wasBumped
+        )
+    }
 }
 
 // MARK: - Job Source Enum

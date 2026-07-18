@@ -18,14 +18,14 @@ struct JobBoardConfigSheet: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: "Configure Job Boards") {
+            SheetHeader(title: "Job boards", subtitle: "Review the sources Flare checks for you.") {
                 dismiss()
             }
             
             Divider()
             
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 24) {
                     AddBoardSection(
                         newBoardName: $newBoardName,
                         newBoardURL: $newBoardURL,
@@ -34,6 +34,8 @@ struct JobBoardConfigSheet: View {
                     
                     if !monitor.boardConfigs.isEmpty {
                         ConfiguredBoardsList(testingBoardId: $testingBoardId)
+                    } else {
+                        SettingsEmptyBoardsView()
                     }
                     
                     SupportedPlatformsInfo()
@@ -46,7 +48,8 @@ struct JobBoardConfigSheet: View {
             // Footer
             SheetFooter(dismiss: { dismiss() })
         }
-        .frame(width: 650, height: 550)
+        .frame(width: 680, height: 620)
+        .preferredColorScheme(.light)
     }
 }
 
@@ -54,13 +57,19 @@ struct JobBoardConfigSheet: View {
 
 struct SheetHeader: View {
     let title: String
+    let subtitle: String
     let onClose: () -> Void
     
     var body: some View {
-        HStack {
-            Text(title)
-                .font(.title2)
-                .fontWeight(.semibold)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text(subtitle)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+            }
             
             Spacer()
             
@@ -69,6 +78,7 @@ struct SheetHeader: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close job board settings")
         }
         .padding()
     }
@@ -82,8 +92,17 @@ struct ConfiguredBoardsList: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Configured Boards", systemImage: "list.bullet")
-                .font(.headline)
+            HStack {
+                Label("Saved boards (\(monitor.boardConfigs.count))", systemImage: "list.bullet")
+                    .font(.headline)
+                Spacer()
+                Text("\(monitor.boardConfigs.filter(\.isEnabled).count) active")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.quaternary, in: Capsule())
+            }
             
             ForEach(monitor.boardConfigs) { config in
                 BoardConfigRow(config: config, testingBoardId: $testingBoardId)
@@ -99,6 +118,7 @@ struct BoardConfigRow: View {
     @Binding var testingBoardId: UUID?
     @ObservedObject private var monitor = JobBoardMonitor.shared
     @State private var isExpanded = false
+    @State private var showingDeleteConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -187,7 +207,8 @@ struct BoardConfigRow: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)
-                    .help("Show details")
+                    .help(isExpanded ? "Hide connection details" : "Show connection details")
+                    .accessibilityLabel(isExpanded ? "Hide details for \(config.displayName)" : "Show details for \(config.displayName)")
 
                     Button(action: testBoard) {
                         if testingBoardId == config.id {
@@ -200,6 +221,7 @@ struct BoardConfigRow: View {
                     .buttonStyle(.borderless)
                     .disabled(!config.isSupported || testingBoardId != nil)
                     .help("Test board")
+                    .accessibilityLabel(testingBoardId == config.id ? "Testing \(config.displayName)" : "Test \(config.displayName)")
 
                     Toggle("", isOn: Binding(
                         get: { config.isEnabled },
@@ -212,13 +234,15 @@ struct BoardConfigRow: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .disabled(!config.isSupported)
+                    .accessibilityLabel("Enable \(config.displayName)")
 
-                    Button(action: deleteBoard) {
+                    Button(action: { showingDeleteConfirmation = true }) {
                         Image(systemName: "trash")
                             .foregroundColor(.red)
                     }
                     .buttonStyle(.borderless)
                     .help("Delete")
+                    .accessibilityLabel("Delete \(config.displayName)")
                 }
             }
             .padding()
@@ -279,12 +303,18 @@ struct BoardConfigRow: View {
                 .padding(.bottom)
             }
         }
-        .background(config.isEnabled ? Color(NSColor.controlBackgroundColor) : Color.gray.opacity(0.1))
+        .background(config.isEnabled ? FlareVisual.paper : FlareVisual.paperShadow.opacity(0.55))
         .cornerRadius(8)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(config.isEnabled ? Color.clear : Color.gray.opacity(0.3), lineWidth: 1)
         )
+        .alert("Remove \(config.displayName)?", isPresented: $showingDeleteConfirmation) {
+            Button("Remove", role: .destructive, action: deleteBoard)
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes the board from Flare. You can add it again later.")
+        }
     }
 
     private func testBoard() {
@@ -349,10 +379,7 @@ struct SourceDetectionBadge: View {
 
 struct SupportedPlatformsInfo: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Platform Support", systemImage: "info.circle")
-                .font(.headline)
-            
+        DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(JobSource.allCases, id: \.self) { source in
                     if source != .microsoft && source != .apple && source != .google && source != .tiktok && source != .snap && source != .amd && source != .meta {
@@ -376,10 +403,38 @@ struct SupportedPlatformsInfo: View {
                     }
                 }
             }
-            .padding()
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-            .cornerRadius(6)
+            .padding(.top, 8)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Label("Supported platforms", systemImage: "info.circle")
+                    .font(.headline)
+                Text("Flare also tries custom sites using AI parsing when it is enabled in Settings.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
+        .padding()
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SettingsEmptyBoardsView: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "building.2.crop.circle")
+                .font(.title2)
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("No saved boards yet")
+                    .font(.headline)
+                Text("Add a careers page above and Flare will confirm it before monitoring it.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding()
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

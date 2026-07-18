@@ -2,7 +2,6 @@
 //  AppleFetcher.swift
 //  Flare
 //
-//  Created by Claude on 1/2/25.
 //
 
 import Foundation

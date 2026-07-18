@@ -113,7 +113,7 @@ actor APISchemaCache {
         try? FileManager.default.createDirectory(at: flareDir, withIntermediateDirectories: true)
 
         // Load existing cache
-        loadCache()
+        cache = Self.loadCache(from: cacheFile)
     }
 
     /// Get cached schema for a domain
@@ -285,19 +285,21 @@ actor APISchemaCache {
 
     // MARK: - Persistence
 
-    private func loadCache() {
-        guard FileManager.default.fileExists(atPath: cacheFile.path) else {
+    private static func loadCache(from url: URL) -> [String: DiscoveredAPISchema] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
             print("[APISchemaCache] No cache file found")
-            return
+            return [:]
         }
 
         do {
-            let data = try Data(contentsOf: cacheFile)
+            let data = try Data(contentsOf: url)
             let schemas = try JSONDecoder().decode([DiscoveredAPISchema].self, from: data)
-            cache = Dictionary(uniqueKeysWithValues: schemas.map { ($0.domain, $0) })
+            let cache = Dictionary(uniqueKeysWithValues: schemas.map { ($0.domain, $0) })
             print("[APISchemaCache] Loaded \(cache.count) cached schemas")
+            return cache
         } catch {
             print("[APISchemaCache] Failed to load cache: \(error)")
+            return [:]
         }
     }
 
@@ -305,7 +307,7 @@ actor APISchemaCache {
         do {
             let schemas = Array(cache.values)
             let data = try JSONEncoder().encode(schemas)
-            try data.write(to: cacheFile)
+            try data.write(to: cacheFile, options: .atomic)
             print("[APISchemaCache] Persisted \(schemas.count) schemas")
         } catch {
             print("[APISchemaCache] Failed to persist cache: \(error)")

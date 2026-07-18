@@ -27,16 +27,13 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
-                // Sidebar
                 if sidebarVisible {
                     SidebarView(sidebarVisible: $sidebarVisible, isWindowMinimized: isWindowMinimized)
                         .frame(width: 200)
                         .transition(.move(edge: .leading))
                 }
                 
-                // Main Content Area
                 HStack(spacing: 0) {
-                    // Show toggle when sidebar is hidden
                     if !sidebarVisible {
                         VStack {
                             Button(action: {
@@ -59,7 +56,6 @@ struct ContentView: View {
                         .padding(.leading, 8)
                     }
                     
-                    // Content based on selected tab
                     VStack(spacing: 0) {
                         if jobManager.selectedTab == "jobs" {
                             JobListView(
@@ -73,7 +69,6 @@ struct ContentView: View {
                         }
                     }
                     
-                    // Job Detail Pane (if job selected)
                     if let selectedJob = jobManager.selectedJob {
                         JobDetailPane(job: selectedJob)
                             .frame(width: min(450, geometry.size.width * 0.5))
@@ -93,7 +88,6 @@ struct ContentView: View {
                 let wasMinimized = isWindowMinimized
                 windowSize = newSize
                 
-                // Auto-hide/show sidebar based on window size
                 if !wasMinimized && isWindowMinimized && sidebarVisible {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         sidebarVisible = false
@@ -107,7 +101,6 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ShowToast"))) { notification in
                 if let message = notification.object as? String {
-                    // Show toast overlay
                     withAnimation {
                         toastMessage = message
                         showToast = true
@@ -134,5 +127,6 @@ struct ContentView: View {
             )
         }
         .frame(minWidth: 400, minHeight: 400)
+        .background(FlareVisual.canvas)
     }
 }

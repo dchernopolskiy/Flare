@@ -37,7 +37,7 @@ struct JobListView: View {
                 showOnlyApplied: $showOnlyApplied
             )
 
-            Divider()
+            Rectangle().fill(FlareVisual.ink.opacity(0.16)).frame(height: 1)
 
             if jobManager.isLoading && allFilteredJobs.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -77,11 +77,11 @@ struct JobListView: View {
                 if allFilteredJobs.count > displayedCount {
                     HStack {
                         Text("Showing \(displayedCount) of \(allFilteredJobs.count) jobs")
-                            .font(.caption2).foregroundColor(.secondary)
+                            .font(.caption2).foregroundColor(FlareVisual.fadedInk)
                         Spacer()
                     }
                     .padding(.horizontal).padding(.vertical, 4)
-                    .background(Color(NSColor.controlBackgroundColor))
+                    .background(FlareVisual.paperShadow.opacity(0.4))
                 }
 
                 if let error = jobManager.lastError {
@@ -90,6 +90,7 @@ struct JobListView: View {
                 }
             }
         }
+        .preferredColorScheme(.light)
         .onAppear {
             setupFilterDebouncing()
             updateFilteredJobs()
@@ -186,7 +187,12 @@ struct JobListHeader: View {
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("Recent Jobs").font(.title2).fontWeight(.semibold)
+                VStack(alignment: .leading, spacing: 2) {
+                    FlareLabel(text: "Freshly opened")
+                    Text("The job counter")
+                        .font(.system(size: 24, weight: .black, design: .rounded))
+                        .foregroundStyle(FlareVisual.ink)
+                }
                 Spacer()
 
                 if !supportedSources.isEmpty {
@@ -220,37 +226,41 @@ struct JobListHeader: View {
                 }
 
                 Button(action: { Task { await jobManager.fetchAllJobs() } }) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }.disabled(jobManager.isLoading)
+                    Label("Stoke", systemImage: "flame")
+                }
+                .tint(FlareVisual.ember)
+                .disabled(jobManager.isLoading)
             }
+            .foregroundStyle(FlareVisual.soot)
             .padding(.horizontal).padding(.top)
 
             HStack(spacing: 12) {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                    TextField("Search jobs...", text: $searchText).textFieldStyle(.plain)
+                    TextField("Search jobs...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(FlareVisual.ink)
                     if !searchText.isEmpty {
                         Button(action: { searchText = "" }) {
                             Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
                         }.buttonStyle(.plain)
                     }
                 }
-                .padding(8)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(8)
+                .padding(10)
+                .flarePaper()
 
                 Toggle(isOn: $showOnlyStarred) {
-                    Label("Starred", systemImage: "star.fill").foregroundColor(showOnlyStarred ? .yellow : .secondary)
+                    Label("Kept", systemImage: "star.fill").foregroundColor(showOnlyStarred ? FlareVisual.brass : FlareVisual.fadedInk)
                 }.toggleStyle(.button)
 
                 Toggle(isOn: $showOnlyApplied) {
-                    Label("Applied", systemImage: "checkmark.circle").foregroundColor(showOnlyApplied ? .green : .secondary)
+                    Label("Sent", systemImage: "checkmark.circle").foregroundColor(showOnlyApplied ? FlareVisual.moss : FlareVisual.fadedInk)
                 }.toggleStyle(.button)
 
                 if !selectedSources.isEmpty && selectedSources.count < supportedSources.count {
                     Text("Filtered").font(.caption)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.2)).cornerRadius(4)
+                        .background(FlareVisual.brass.opacity(0.18), in: Capsule())
                 }
             }
             .padding(.horizontal).padding(.bottom)
@@ -282,9 +292,9 @@ struct EmptyJobsView: View {
     var body: some View {
         VStack(spacing: 8) {
             Spacer()
-            Image(systemName: "tray").font(.system(size: 50)).foregroundColor(.secondary)
-            Text("No jobs found").font(.title3).foregroundColor(.secondary)
-            Text(jobManager.fetchStatistics.totalJobs > 0 ? "Try adjusting your filters" : "Check your filters in Settings")
+            Image("FlareMascot").resizable().scaledToFit().frame(width: 70, height: 70)
+            Text("Nothing on the counter yet").font(.title3.weight(.bold)).foregroundColor(FlareVisual.ink)
+            Text(jobManager.fetchStatistics.totalJobs > 0 ? "Loosen a filter and see what turns up." : "Choose a few sources, then stoke the search.")
                 .font(.caption).foregroundColor(.secondary)
             Spacer()
         }.frame(maxWidth: .infinity)
@@ -297,10 +307,11 @@ struct ErrorBanner: View {
     var body: some View {
         HStack {
             Image(systemName: "exclamationmark.triangle").foregroundColor(.orange)
-            Text(message).font(.caption).foregroundColor(.secondary)
+            Text(message).font(.caption).foregroundColor(FlareVisual.soot)
             Spacer()
         }
         .padding()
-        .background(Color.orange.opacity(0.1))
+        .background(Color.orange.opacity(0.18))
+        .overlay(Rectangle().fill(Color.orange.opacity(0.55)).frame(height: 1), alignment: .top)
     }
 }

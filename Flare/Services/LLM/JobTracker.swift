@@ -12,13 +12,14 @@ actor JobTracker {
 
     private var trackedJobs: [String: TrackedJob] = [:]
     private let cacheFile: URL
+    private var persistenceTask: Task<Void, Never>?
 
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let flareDir = appSupport.appendingPathComponent("Flare", isDirectory: true)
         cacheFile = flareDir.appendingPathComponent("job-tracking.json")
         try? FileManager.default.createDirectory(at: flareDir, withIntermediateDirectories: true)
-        loadCache()
+        trackedJobs = Self.loadCache(from: cacheFile)
     }
 
     func trackJob(id: String, title: String, url: String, source: String) {
@@ -31,10 +32,10 @@ actor JobTracker {
                 firstSeen: Date(),
                 lastSeen: Date()
             )
-            persistCache()
         } else {
             trackedJobs[id]?.lastSeen = Date()
         }
+        schedulePersistence()
     }
 
     func getFirstSeenDate(for jobId: String) -> Date? {
@@ -52,24 +53,35 @@ actor JobTracker {
     func cleanup() {
         let cutoff = Date().addingTimeInterval(-90 * 24 * 60 * 60)
         trackedJobs = trackedJobs.filter { $0.value.lastSeen > cutoff }
+        persistenceTask?.cancel()
         persistCache()
+    }
+
+    /// Clears only the in-memory view. PersistenceService removes the underlying
+    /// files transactionally, so writing here would create a partial clear if that
+    /// operation later failed.
+    func clear() {
+        persistenceTask?.cancel()
+        trackedJobs.removeAll()
     }
 
     // MARK: - Persistence
 
-    private func loadCache() {
-        guard FileManager.default.fileExists(atPath: cacheFile.path) else {
+    private static func loadCache(from url: URL) -> [String: TrackedJob] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
             print("[JobTracker] No cache file found")
-            return
+            return [:]
         }
 
         do {
-            let data = try Data(contentsOf: cacheFile)
+            let data = try Data(contentsOf: url)
             let jobs = try JSONDecoder().decode([TrackedJob].self, from: data)
-            trackedJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+            let trackedJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
             print("[JobTracker] Loaded \(trackedJobs.count) tracked jobs")
+            return trackedJobs
         } catch {
             print("[JobTracker] Failed to load cache: \(error)")
+            return [:]
         }
     }
 
@@ -77,9 +89,18 @@ actor JobTracker {
         do {
             let jobs = Array(trackedJobs.values)
             let data = try JSONEncoder().encode(jobs)
-            try data.write(to: cacheFile)
+            try data.write(to: cacheFile, options: .atomic)
         } catch {
             print("[JobTracker] Failed to persist cache: \(error)")
+        }
+    }
+
+    private func schedulePersistence() {
+        persistenceTask?.cancel()
+        persistenceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.persistCache()
         }
     }
 }

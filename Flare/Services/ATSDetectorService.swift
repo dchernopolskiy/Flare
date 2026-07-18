@@ -10,17 +10,51 @@ actor ATSDetectorService {
     static let shared = ATSDetectorService()
     
     struct DetectionResult {
+        struct Evidence: Codable, Hashable {
+            let kind: String
+            let detail: String
+            let weight: Int
+        }
+
         let source: JobSource?
         let confidence: Confidence
         let apiEndpoint: String?
         let actualATSUrl: String?
         let message: String
+        let evidence: [Evidence]
         
         enum Confidence {
             case certain
             case likely
             case uncertain
             case notDetected
+        }
+
+        init(
+            source: JobSource?,
+            confidence: Confidence,
+            apiEndpoint: String?,
+            actualATSUrl: String?,
+            message: String,
+            evidence: [Evidence] = []
+        ) {
+            self.source = source
+            self.confidence = confidence
+            self.apiEndpoint = apiEndpoint
+            self.actualATSUrl = actualATSUrl
+            self.message = message
+            self.evidence = evidence
+        }
+
+        func adding(_ additionalEvidence: [Evidence]) -> DetectionResult {
+            DetectionResult(
+                source: source,
+                confidence: confidence,
+                apiEndpoint: apiEndpoint,
+                actualATSUrl: actualATSUrl,
+                message: message,
+                evidence: evidence + additionalEvidence
+            )
         }
     }
     
@@ -34,7 +68,8 @@ actor ATSDetectorService {
                 confidence: .certain,
                 apiEndpoint: nil,
                 actualATSUrl: url.absoluteString,
-                message: "Detected \(quickMatch.rawValue) from URL pattern"
+                message: "Detected \(quickMatch.rawValue) from URL pattern",
+                evidence: [.init(kind: "URL", detail: url.host ?? url.absoluteString, weight: 100)]
             )
         }
         
@@ -53,29 +88,30 @@ actor ATSDetectorService {
         
         let isCareersPage = isLikelyCareersPage(url: url, html: html)
         let indicators = analyzeATSIndicators(in: html)
+        let evidence = indicators.evidence
         print("[ATS Detector] Found indicators: \(indicators)")
         print("[ATS Detector] Probing ATS APIs...")
         if let probeResult = await probeATSystems(indicators: indicators, originalURL: url, isCareersPage: isCareersPage) {
             print("[ATS Detector] Found via API probe: \(probeResult.source?.rawValue ?? "unknown")")
-            return probeResult
+            return probeResult.adding(evidence + [.init(kind: "validated endpoint", detail: probeResult.apiEndpoint ?? "job feed", weight: 100)])
         }
         
         print("[ATS Detector] Searching for embedded ATS URLs...")
         if let embeddedResult = await findEmbeddedATSUrls(in: html, originalURL: url) {
             print("[ATS Detector] Found via embedded URLs: \(embeddedResult.source?.rawValue ?? "unknown")")
-            return embeddedResult
+            return embeddedResult.adding(evidence + [.init(kind: "embedded link", detail: embeddedResult.actualATSUrl ?? "career page", weight: 60)])
         }
         
         print("[ATS Detector] Searching in JSON/script data...")
         if let jsonResult = findATSUrlsInJSON(in: html, originalURL: url) {
             print("[ATS Detector] Found via JSON: \(jsonResult.source?.rawValue ?? "unknown")")
-            return jsonResult
+            return jsonResult.adding(evidence + [.init(kind: "embedded data", detail: "structured page data", weight: 45)])
         }
         
         print("[ATS Detector] Searching for API patterns...")
         if let apiResult = findJobAPIPatterns(in: html, originalURL: url) {
             print("[ATS Detector] Found API pattern but couldn't determine ATS")
-            return apiResult
+            return apiResult.adding(evidence + [.init(kind: "API signature", detail: apiResult.apiEndpoint ?? "job endpoint", weight: 40)])
         }
         
         print("[ATS Detector] No ATS detected")
@@ -131,6 +167,15 @@ actor ATSDetectorService {
                 ("taleo", taleo)
             ]
             return all.max(by: { $0.1 < $1.1 })
+        }
+
+        var evidence: [DetectionResult.Evidence] {
+            [
+                ("Greenhouse", greenhouse), ("Lever", lever), ("Ashby", ashby),
+                ("Workday", workday), ("Beamery", beamery), ("iCIMS", icims), ("Taleo", taleo)
+            ]
+            .filter { $0.1 > 0 }
+            .map { .init(kind: "page fingerprint", detail: "\($0.0) markers", weight: min($0.1 * 12, 48)) }
         }
     }
     
@@ -607,6 +652,7 @@ actor ATSDetectorService {
     
     private func findEmbeddedATSUrls(in html: String, originalURL: URL) async -> DetectionResult? {
         print("[Embedded Search] Searching for embedded ATS URLs...")
+        let searchableHTML = unescapeEmbeddedURLs(in: html)
         
         let atsUrlPatterns: [(pattern: String, source: JobSource)] = [
             (#"https?://[^"'\s]*\.wd[0-9]+\.myworkdayjobs\.com/[^"'\s]*"#, .workday),
@@ -624,10 +670,10 @@ actor ATSDetectorService {
         
         for (_, (pattern, source)) in atsUrlPatterns.enumerated() {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-               let range = Range(match.range, in: html) {
+               let match = regex.firstMatch(in: searchableHTML, range: NSRange(searchableHTML.startIndex..., in: searchableHTML)),
+               let range = Range(match.range, in: searchableHTML) {
                 
-                var foundUrl = String(html[range])
+                var foundUrl = String(searchableHTML[range])
                 foundUrl = foundUrl.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
                 
                 print("[Embedded Search] Found \(source.rawValue) URL: \(foundUrl)")
@@ -687,6 +733,13 @@ actor ATSDetectorService {
         }
         
         return nil
+    }
+
+    private func unescapeEmbeddedURLs(in html: String) -> String {
+        html
+            .replacingOccurrences(of: "\\/", with: "/")
+            .replacingOccurrences(of: "\\u002F", with: "/")
+            .replacingOccurrences(of: "\\u002f", with: "/")
     }
     
     private func normalizeWorkdayUrl(_ url: String) -> String {
@@ -768,6 +821,7 @@ actor ATSDetectorService {
     }
     
     private func findATSUrlsInJSON(in html: String, originalURL: URL) -> DetectionResult? {
+        let searchableHTML = unescapeEmbeddedURLs(in: html)
         let jsonPatterns = [
             #"["\']?(https?://(?:boards?-?api)?\.greenhouse\.io/[^"'\s]+)["\']?"#,
             #"["\']?(https?://jobs\.lever\.co/[^"'\s]+)["\']?"#,
@@ -777,11 +831,11 @@ actor ATSDetectorService {
         
         for (_, pattern) in jsonPatterns.enumerated() {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let match = regex.firstMatch(in: searchableHTML, range: NSRange(searchableHTML.startIndex..., in: searchableHTML)),
                match.numberOfRanges > 1,
-               let range = Range(match.range(at: 1), in: html) {
+               let range = Range(match.range(at: 1), in: searchableHTML) {
                 
-                let foundUrl = String(html[range])
+                let foundUrl = String(searchableHTML[range])
                 
                 if let source = JobSource.detectFromURL(foundUrl) {
                     var normalizedUrl = foundUrl
@@ -849,15 +903,10 @@ extension ATSDetectorService {
     func detectATSEnhanced(from url: URL) async throws -> DetectionResult {
         print("[ATS Detector] Starting enhanced detection for: \(url.absoluteString)")
 
-        if let quickMatch = JobSource.detectFromURL(url.absoluteString) {
-            print("[ATS Detector] Quick match found: \(quickMatch.rawValue)")
-            return DetectionResult(
-                source: quickMatch,
-                confidence: .certain,
-                apiEndpoint: nil,
-                actualATSUrl: url.absoluteString,
-                message: "Detected \(quickMatch.rawValue) from URL pattern"
-            )
+        // Render only after deterministic checks fail.
+        let deterministicResult = try await detectATS(from: url)
+        if deterministicResult.source != nil {
+            return deterministicResult
         }
 
         if let jsResult = await detectWithJavaScriptRendering(url: url) {
@@ -865,7 +914,7 @@ extension ATSDetectorService {
             return jsResult
         }
 
-        return try await detectATS(from: url)
+        return deterministicResult
     }
     @MainActor
     private func detectWithJavaScriptRendering(url: URL) async -> DetectionResult? {
@@ -881,7 +930,8 @@ extension ATSDetectorService {
                         confidence: .certain,
                         apiEndpoint: nil,
                         actualATSUrl: detectedURL,
-                        message: "Detected \(source.rawValue) via JavaScript rendering"
+                        message: "Detected \(source.rawValue) via JavaScript rendering",
+                        evidence: [.init(kind: "rendered page", detail: "navigation request", weight: 75)]
                     )
                     if !hasResumed {
                         hasResumed = true
@@ -1106,7 +1156,8 @@ extension ATSDetectorService {
                                 confidence: .certain,
                                 apiEndpoint: nil,
                                 actualATSUrl: detectedURL ?? url.absoluteString,
-                                message: "Detected \(source.rawValue) via JavaScript analysis\(gtmScanned ? " (including GTM)" : "")"
+                                message: "Detected \(source.rawValue) via JavaScript analysis\(gtmScanned ? " (including GTM)" : "")",
+                                evidence: [.init(kind: "rendered scripts", detail: gtmScanned ? "GTM and page scripts" : "page scripts", weight: 70)]
                             )
                             print("[ATS Detector] Successfully detected \(source.rawValue) via JS")
                             if !hasResumed {

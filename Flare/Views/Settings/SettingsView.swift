@@ -31,109 +31,47 @@ struct SettingsView: View {
     @State private var downloadProgress: Double = 0.0
     @State private var downloadStatus: String = ""
     @State private var modelSize: Double? = nil
+    @State private var showCacheCleanupConfirmation = false
+    @State private var cacheCleanupMessage: String?
+    @State private var isClearingCache = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Header
-            Text("Settings")
-                .font(.title2)
-                .fontWeight(.semibold)
-            
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsHeader(isRefreshing: jobManager.isLoading)
+                .padding(.horizontal)
+                .padding(.vertical, 18)
+
             Divider()
             
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    // Data Sources
-                    SettingsSection(title: "Data Sources") {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    SettingsSection(
+                        title: "Data Sources",
+                        icon: "dot.radiowaves.left.and.right",
+                        subtitle: "Choose the career sites included in each refresh."
+                    ) {
                         VStack(alignment: .leading, spacing: 12) {
-                            Toggle(isOn: $enableMicrosoft) {
-                                HStack {
-                                    Image(systemName: JobSource.microsoft.icon)
-                                        .foregroundColor(JobSource.microsoft.color)
-                                    Text("Microsoft Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Toggle(isOn: $enableApple) {
-                                HStack {
-                                    Image(systemName: JobSource.apple.icon)
-                                        .foregroundColor(JobSource.apple.color)
-                                    Text("Apple Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Toggle(isOn: $enableTikTok) {
-                                HStack {
-                                    Image(systemName: JobSource.tiktok.icon)
-                                        .foregroundColor(JobSource.tiktok.color)
-                                    Text("TikTok Jobs")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
+                            SourceToggle(source: .microsoft, title: "Microsoft Careers", isOn: $enableMicrosoft)
+                            SourceToggle(source: .apple, title: "Apple Careers", isOn: $enableApple)
+                            SourceToggle(source: .tiktok, title: "TikTok Jobs", isOn: $enableTikTok)
+                            SourceToggle(source: .snap, title: "Snap Inc. Careers", isOn: $enableSnap)
+                            SourceToggle(source: .amd, title: "AMD Careers", isOn: $enableAMD)
+                            SourceToggle(source: .meta, title: "Meta Careers", isOn: $enableMeta)
+                            SourceToggle(source: .google, title: "Google Careers", isOn: $enableGoogle)
+                            SourceToggle(icon: "globe", color: .blue, title: "Custom Job Boards", isOn: $enableCustomBoards)
                             
-                            Toggle(isOn: $enableSnap) {
-                                HStack {
-                                    Image(systemName: JobSource.snap.icon)
-                                        .foregroundColor(JobSource.snap.color)
-                                    Text("Snap Inc. Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            
-                            Toggle(isOn: $enableAMD) {
-                                HStack {
-                                    Image(systemName: JobSource.amd.icon)
-                                        .foregroundColor(JobSource.amd.color)
-                                    Text("AMD Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            
-                            Toggle(isOn: $enableMeta) {
-                                HStack {
-                                    Image(systemName: JobSource.meta.icon)
-                                        .foregroundColor(JobSource.meta.color)
-                                    Text("Meta Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Toggle(isOn: $enableGoogle) {
-                                HStack {
-                                    Image(systemName: JobSource.google.icon)
-                                        .foregroundColor(JobSource.google.color)
-                                    Text("Google Careers")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Toggle(isOn: $enableCustomBoards) {
-                                HStack {
-                                    Image(systemName: "globe")
-                                        .foregroundColor(.blue)
-                                    Text("Custom Job Boards")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            
-                            Text("Note: Some sources may have fixed refresh intervals")
+                            Label("Some sources use their own refresh intervals.", systemImage: "info.circle")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                                .padding(.top, 2)
                         }
                     }
 
-                    // AI Parsing Section
-                    SettingsSection(title: "AI-Powered Parsing") {
+                    SettingsSection(
+                        title: "AI-Powered Parsing",
+                        icon: "sparkles",
+                        subtitle: "Use an on-device model when a job board cannot be recognized."
+                    ) {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle(isOn: $enableAIParser) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -151,7 +89,6 @@ struct SettingsView: View {
 
                             if enableAIParser {
                                 VStack(alignment: .leading, spacing: 12) {
-                                    // Model Status
                                     HStack(spacing: 8) {
                                         Image(systemName: modelSize != nil ? "checkmark.circle.fill" : "arrow.down.circle")
                                             .foregroundColor(modelSize != nil ? .green : .blue)
@@ -173,7 +110,6 @@ struct SettingsView: View {
                                         Spacer()
                                     }
 
-                                    // Download Progress
                                     if isDownloadingModel {
                                         VStack(alignment: .leading, spacing: 6) {
                                             ProgressView(value: downloadProgress, total: 1.0)
@@ -185,7 +121,6 @@ struct SettingsView: View {
                                         }
                                     }
 
-                                    // Download/Delete Button
                                     HStack {
                                         if modelSize == nil && !isDownloadingModel {
                                             Button(action: { downloadModel() }) {
@@ -203,7 +138,6 @@ struct SettingsView: View {
 
                                     Divider()
 
-                                    // Performance Note
                                     VStack(alignment: .leading, spacing: 6) {
                                         HStack(spacing: 4) {
                                             Image(systemName: "info.circle")
@@ -227,8 +161,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    // Job Filters Section
-                    SettingsSection(title: "Job Filters") {
+                    SettingsSection(title: "Job Filters", icon: "line.3.horizontal.decrease.circle", subtitle: "Narrow results before they reach your job list.") {
                         VStack(alignment: .leading, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Label("Job Titles", systemImage: "briefcase")
@@ -260,8 +193,7 @@ struct SettingsView: View {
                         }
                     }
                     
-                    // Fetch Settings Section
-                    SettingsSection(title: "Fetch Settings") {
+                    SettingsSection(title: "Refresh", icon: "arrow.triangle.2.circlepath", subtitle: "Control the default polling cadence and search depth.") {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Text("Check for new jobs every")
@@ -288,13 +220,12 @@ struct SettingsView: View {
                         }
                     }
 
-                    // App Updates Section
-                    SettingsSection(title: "App Updates") {
+                    SettingsSection(title: "App Updates", icon: "arrow.down.app", subtitle: "Keep Flare current without interrupting your workflow.") {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle(isOn: $autoCheckForUpdates) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Automatically check for updates")
-                                    Text("Check for app updates daily at 10 AM")
+                                    Text("Sparkle checks periodically while Flare is running")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
@@ -313,8 +244,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    // Support Section
-                    SettingsSection(title: "Support") {
+                    SettingsSection(title: "Support", icon: "heart", subtitle: "Help keep Flare moving.") {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -345,7 +275,7 @@ struct SettingsView: View {
                     }
                     
                     if jobManager.fetchStatistics.lastFetchTime != nil {
-                        SettingsSection(title: "Statistics") {
+                        SettingsSection(title: "Last Refresh", icon: "chart.bar", subtitle: "A snapshot of the most recent fetch.") {
                             VStack(alignment: .leading, spacing: 8) {
                                 StatRow(label: "Total Jobs", value: "\(jobManager.fetchStatistics.totalJobs)")
                                 StatRow(label: "New Jobs", value: "\(jobManager.fetchStatistics.newJobs)")
@@ -377,65 +307,116 @@ struct SettingsView: View {
                                     StatRow(label: "Last Updated", value: lastFetch.formatted())
                                 }
                             }
-                            
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Data Storage")
-                                    .font(.headline)
-                                    .foregroundColor(.primary)
-                                
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("Data Location:")
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                    }
-                                    
-                                    Text(PersistenceService.shared.getDataDirectoryPath())
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .textSelection(.enabled)
-                                        .padding(8)
-                                        .background(Color(NSColor.controlBackgroundColor))
-                                        .cornerRadius(4)
-                                    
-                                    HStack(spacing: 12) {
-                                        Button("Open in Finder") {
-                                            Task {
-                                                await PersistenceService.shared.openDataDirectoryInFinder()
-                                            }
-                                        }
-                                        .buttonStyle(.bordered)
-                                        
-                                        Button("Copy Path") {
-                                            let pasteboard = NSPasteboard.general
-                                            pasteboard.clearContents()
-                                            pasteboard.setString(PersistenceService.shared.getDataDirectoryPath(), forType: .string)
-                                        }
-                                        .buttonStyle(.bordered)
-                                    }
-                                }
-                                .padding()
-                                .background(Color(NSColor.controlBackgroundColor))
-                                .cornerRadius(8)
+                        }
+                    }
+
+                    SettingsSection(
+                        title: "Data Storage",
+                        icon: "externaldrive",
+                        subtitle: "Manage the local files Flare uses to start quickly."
+                    ) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("LOCAL DATA FOLDER")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundColor(.secondary)
+
+                                Text(PersistenceService.shared.getDataDirectoryPath())
+                                .font(.caption)
+                                .fontDesign(.monospaced)
+                                .foregroundColor(.secondary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(Color(NSColor.windowBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
+                                .accessibilityLabel("Local data folder")
                             }
 
+                            HStack(spacing: 12) {
+                                Button {
+                                    Task {
+                                        await PersistenceService.shared.openDataDirectoryInFinder()
+                                    }
+                                } label: {
+                                    Label("Open in Finder", systemImage: "folder")
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button {
+                                    let pasteboard = NSPasteboard.general
+                                    pasteboard.clearContents()
+                                    pasteboard.setString(PersistenceService.shared.getDataDirectoryPath(), forType: .string)
+                                } label: {
+                                    Label("Copy Path", systemImage: "doc.on.doc")
+                                }
+                                .buttonStyle(.bordered)
+
+                                Spacer()
+                            }
+
+                            Divider()
+
+                            HStack(alignment: .center, spacing: 12) {
+                                Image(systemName: "trash.slash")
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 20)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Job cache")
+                                        .font(.subheadline.weight(.medium))
+                                    Text("Removes cached jobs and seen-job history. Your boards, settings, saved jobs, and AI model stay in place.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                if isClearingCache {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityLabel("Clearing job cache")
+                                } else {
+                                    Button(role: .destructive) {
+                                        showCacheCleanupConfirmation = true
+                                    } label: {
+                                        Label("Clear Cache", systemImage: "trash")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(jobManager.isLoading)
+                                    .help(jobManager.isLoading ? "Wait for the current refresh to finish before clearing the cache." : "Remove cached jobs and seen-job history.")
+                                }
+                            }
+
+                            if let cacheCleanupMessage {
+                                Label(cacheCleanupMessage, systemImage: cacheCleanupMessage.hasPrefix("Could not") ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundColor(cacheCleanupMessage.hasPrefix("Could not") ? .orange : .green)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background((cacheCleanupMessage.hasPrefix("Could not") ? Color.orange : Color.green).opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                            }
                         }
                     }
                     
-                    // Action Buttons
-                    HStack {
-                        Button("Save Settings") {
+                    HStack(spacing: 12) {
+                        Button {
                             saveSettings(refreshNow: false)
                             showSuccessMessage = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                                 showSuccessMessage = false
                             }
+                        } label: {
+                            Label("Save Settings", systemImage: "checkmark")
                         }
                         .buttonStyle(.borderedProminent)
                         
-                        Button("Save and Refresh Now") {
+                        Button {
                             saveSettings(refreshNow: true)
+                        } label: {
+                            Label(jobManager.isLoading ? "Refreshing…" : "Save and Refresh", systemImage: "arrow.clockwise")
                         }
+                        .disabled(jobManager.isLoading || isClearingCache)
                         Spacer()
                         
                         if showSuccessMessage {
@@ -451,6 +432,31 @@ struct SettingsView: View {
                 }
                 .padding()
             }
+        }
+        .preferredColorScheme(.light)
+        .alert("Clear Job Cache?", isPresented: $showCacheCleanupConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Cache", role: .destructive) {
+                guard !jobManager.isLoading else {
+                    cacheCleanupMessage = "Could not clear the cache while a refresh is running."
+                    return
+                }
+
+                isClearingCache = true
+                cacheCleanupMessage = nil
+                Task { @MainActor in
+                    defer { isClearingCache = false }
+                    do {
+                        let result = try await jobManager.clearJobCache()
+                        let size = ByteCountFormatter.string(fromByteCount: result.bytesFreed, countStyle: .file)
+                        cacheCleanupMessage = "Removed \(result.filesRemoved) cache files and freed \(size)."
+                    } catch {
+                        cacheCleanupMessage = "Could not clear the job cache: \(error.localizedDescription)"
+                    }
+                }
+            }
+        } message: {
+            Text("This removes cached jobs and seen-job history. Starred and applied job IDs, boards, settings, API routes, and the AI model are preserved.")
         }
         .padding()
         .onAppear {
@@ -475,7 +481,6 @@ struct SettingsView: View {
         autoCheckForUpdates = jobManager.autoCheckForUpdates
         enableAIParser = jobManager.enableAIParser
 
-        // Check model status
         Task {
             modelSize = await ModelDownloader.shared.getModelSize()
         }
@@ -517,7 +522,6 @@ struct SettingsView: View {
 
     private func checkAndDownloadModel() {
         Task {
-            // Always check model size when toggling AI on
             modelSize = await ModelDownloader.shared.getModelSize()
 
             let isDownloaded = await ModelDownloader.shared.isModelDownloaded()
@@ -535,17 +539,13 @@ struct SettingsView: View {
 
             do {
                 _ = try await ModelDownloader.shared.downloadModel { progress, status in
-                    self.downloadProgress = progress
-                    self.downloadStatus = status
+                    Task { @MainActor in
+                        self.downloadProgress = progress
+                        self.downloadStatus = status
+                    }
                 }
 
-                // Update model size BEFORE setting isDownloadingModel = false
-                // This prevents UI from jumping back to download button
                 modelSize = await ModelDownloader.shared.getModelSize()
-
-                // Small delay to ensure UI shows final state
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-
                 isDownloadingModel = false
             } catch {
                 print("[Settings] Model download failed: \(error)")
@@ -567,26 +567,122 @@ struct SettingsView: View {
     }
 }
 
+private struct SettingsHeader: View {
+    let isRefreshing: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Settings")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(FlareVisual.ink)
+
+                Text("Tune the sources, filters, and local tools behind your job search.")
+                    .font(.callout)
+                    .foregroundColor(FlareVisual.fadedInk)
+            }
+
+            Spacer(minLength: 16)
+
+            if isRefreshing {
+                HStack(spacing: 7) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Refreshing")
+                }
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.accentColor.opacity(0.12), in: Capsule())
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("A job refresh is in progress")
+            }
+        }
+    }
+}
+
 struct SettingsSection<Content: View>: View {
     let title: String
+    let icon: String
+    let subtitle: String?
     let content: () -> Content
-    
-    init(title: String, @ViewBuilder content: @escaping () -> Content) {
+
+    init(
+        title: String,
+        icon: String = "gearshape",
+        subtitle: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
         self.title = title
+        self.icon = icon
+        self.subtitle = subtitle
         self.content = content
     }
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-                .foregroundColor(.primary)
-            
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundColor(FlareVisual.ember)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+
+                Text(title)
+                    .font(.headline)
+                    .foregroundColor(FlareVisual.ink)
+            }
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(FlareVisual.fadedInk)
+                    .padding(.leading, 26)
+            }
+
             content()
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(8)
+                .padding(16)
+                .background(FlareVisual.paper, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .foregroundStyle(FlareVisual.soot)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(FlareVisual.ink.opacity(0.16), lineWidth: 1))
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct SourceToggle: View {
+    let icon: String
+    let color: Color
+    let title: String
+    @Binding var isOn: Bool
+
+    init(source: JobSource, title: String, isOn: Binding<Bool>) {
+        self.icon = source.icon
+        self.color = source.color
+        self.title = title
+        self._isOn = isOn
+    }
+
+    init(icon: String, color: Color, title: String, isOn: Binding<Bool>) {
+        self.icon = icon
+        self.color = color
+        self.title = title
+        self._isOn = isOn
+    }
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Label {
+                Text(title)
+                    .font(.callout)
+            } icon: {
+                Image(systemName: icon)
+                    .foregroundColor(color)
+                    .frame(width: 16)
+            }
+        }
+        .accessibilityHint("Includes \(title) when Flare refreshes jobs.")
     }
 }
 

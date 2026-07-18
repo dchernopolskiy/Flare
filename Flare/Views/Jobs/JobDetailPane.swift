@@ -12,6 +12,7 @@ struct JobDetailPane: View {
     let job: Job
     @EnvironmentObject var jobManager: JobManager
     @State private var selectedSection = "overview"
+    @State private var isEnrichingDescription = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,7 +35,7 @@ struct JobDetailPane: View {
                         )
                     }
                     
-                    JobDetailContent(job: job, selectedSection: selectedSection)
+                    JobDetailContent(job: job, selectedSection: selectedSection, isEnriching: isEnrichingDescription)
                     
                     Spacer(minLength: 20)
                     
@@ -43,13 +44,20 @@ struct JobDetailPane: View {
                 .padding()
             }
         }
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(FlareVisual.paper)
+        .preferredColorScheme(.light)
         .overlay(
             Rectangle()
                 .frame(width: 1)
-                .foregroundColor(Color(NSColor.separatorColor)),
+                .foregroundColor(FlareVisual.ink.opacity(0.18)),
             alignment: .leading
         )
+        .task(id: job.id) {
+            guard job.cleanDescription.count < 280 else { return }
+            isEnrichingDescription = true
+            _ = await jobManager.enrichDescription(for: job)
+            isEnrichingDescription = false
+        }
     }
 }
 
@@ -60,9 +68,7 @@ struct JobDetailHeader: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Job Details")
-                    .font(.title3)
-                    .fontWeight(.semibold)
+                FlareLabel(text: "Job card", color: FlareVisual.brass)
                 
                 HStack(spacing: 6) {
                     Image(systemName: job.source.icon)
@@ -70,7 +76,7 @@ struct JobDetailHeader: View {
                         .font(.caption)
                     Text(job.companyName ?? job.source.rawValue)
                         .font(.caption)
-                        .foregroundColor(job.source.color)
+                        .foregroundColor(FlareVisual.soot)
                 }
             }
             
@@ -97,8 +103,8 @@ struct JobInfoSection: View {
             // Title
             HStack {
                 Text(job.title)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(.system(size: 22, weight: .black, design: .rounded))
+                    .foregroundStyle(FlareVisual.ink)
                 
                 Spacer()
                 
@@ -160,7 +166,7 @@ struct JobInfoSection: View {
                         .font(.callout)
                 }
             }
-            .foregroundColor(.secondary)
+            .foregroundColor(FlareVisual.fadedInk)
             
             // Work Flexibility Badge
             if let flexibility = job.workSiteFlexibility, !flexibility.isEmpty {
@@ -172,6 +178,7 @@ struct JobInfoSection: View {
                     .cornerRadius(6)
             }
         }
+        .foregroundStyle(FlareVisual.soot)
     }
 }
 
@@ -181,27 +188,55 @@ struct JobDetailSectionPicker: View {
     let hasPreferred: Bool
     
     var body: some View {
-        Picker("Section", selection: $selectedSection) {
-            Text("Overview").tag("overview")
+        HStack(spacing: 5) {
+            Text("Section")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(FlareVisual.soot)
+
+            sectionButton("Overview", value: "overview")
             if hasRequired {
-                Text("Required").tag("required")
+                sectionButton("Required", value: "required")
             }
             if hasPreferred {
-                Text("Preferred").tag("preferred")
+                sectionButton("Preferred", value: "preferred")
             }
         }
-        .pickerStyle(.segmented)
+        .padding(4)
+        .background(FlareVisual.paperShadow.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func sectionButton(_ title: String, value: String) -> some View {
+        Button {
+            selectedSection = value
+        } label: {
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(selectedSection == value ? FlareVisual.paper : FlareVisual.soot)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(selectedSection == value ? FlareVisual.ember : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
 
 struct JobDetailContent: View {
     let job: Job
     let selectedSection: String
+    let isEnriching: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             switch selectedSection {
             case "overview":
+                if isEnriching {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading the original posting…")
+                            .font(.callout.weight(.medium))
+                    }
+                    .foregroundStyle(FlareVisual.fadedInk)
+                }
                 if !job.overview.isEmpty {
                     Text(job.overview)
                         .font(.body)
@@ -211,7 +246,7 @@ struct JobDetailContent: View {
                 } else {
                     Text("No description available.")
                         .font(.body)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(FlareVisual.fadedInk)
                         .italic()
                 }
                 
@@ -249,6 +284,7 @@ struct JobDetailContent: View {
                 EmptyView()
             }
         }
+        .foregroundStyle(FlareVisual.soot)
     }
 }
 

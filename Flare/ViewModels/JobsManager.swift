@@ -71,8 +71,8 @@ class JobManager: ObservableObject {
     @Published var appliedJobIds: Set<String> = []
     @Published var fetchStatistics = FetchStatistics()
     @Published var starredJobIds: Set<String> = []
+    @Published private(set) var isClearingJobCache = false
 
-    // Simple cache invalidation flag instead of over-engineered FilterCache
     private var filterCacheValid = false
     private var cachedFilteredJobs: [Job] = []
     private var lastFilterParams: (title: String, location: String, sources: Set<JobSource>) = ("", "", [])
@@ -91,19 +91,15 @@ class JobManager: ObservableObject {
 
         var filtered = allJobsSorted
 
-        // 48h date filter based on posting date or discovery time
         let postingCutoff: TimeInterval = 172800  // 48 hours
         let discoveryCutoff: TimeInterval = 172800  // 48 hours
         filtered = filtered.filter { job in
             if job.isBumpedRecently { return true }
-            // Primary: show if posted within 48h
             if let postingDate = job.postingDate, Date().timeIntervalSince(postingDate) <= postingCutoff { return true }
-            // Fallback: show recently discovered jobs (no posting date or just found) for 24h
             if Date().timeIntervalSince(job.firstSeenDate) <= discoveryCutoff { return true }
             return false
         }
 
-        // Title filter
         if !titleFilter.isEmpty {
             let keywords = titleFilter.split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -116,7 +112,6 @@ class JobManager: ObservableObject {
             }
         }
 
-        // Location filter
         if !locationFilter.isEmpty {
             let keywords = locationFilter.split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -129,7 +124,6 @@ class JobManager: ObservableObject {
             }
         }
 
-        // Source filter
         if !sourcesFilter.isEmpty {
             filtered = filtered.filter { sourcesFilter.contains($0.source) }
         }
@@ -242,16 +236,25 @@ class JobManager: ObservableObject {
 
     // MARK: - Private Properties
     private var fetchTimers: [JobSource: Timer] = [:]
+    private var customBoardTimer: Timer?
     private var storedJobIds: Set<String> = []
     private var notifiedJobIds: Set<String> = []
     private let persistenceService = PersistenceService.shared
     private let notificationService = NotificationService.shared
+    private let descriptionService = JobDescriptionService.shared
     private var cancellables = Set<AnyCancellable>()
     private var jobsBySource: [JobSource: [Job]] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
+    private var sessionActiveObserver: NSObjectProtocol?
+    private var wakeRefreshTask: Task<Void, Never>?
+    private var cleanupTask: Task<Void, Never>?
     private var isMonitoring = false
+    private var isSuspendedForSleep = false
+    private var awaitingWakeSession = false
+    private var isFetchInProgress = false
+    private var fetchGeneration = 0
 
-    // Source toggle bindings - maps source to its enable publisher
     private lazy var sourceBindings: [(source: JobSource, publisher: Published<Bool>.Publisher)] = [
         (.tiktok, $enableTikTok),
         (.microsoft, $enableMicrosoft),
@@ -267,7 +270,16 @@ class JobManager: ObservableObject {
         if let observer = wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
+        if let observer = sleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        if let observer = sessionActiveObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
         fetchTimers.values.forEach { $0.invalidate() }
+        customBoardTimer?.invalidate()
+        wakeRefreshTask?.cancel()
+        cleanupTask?.cancel()
     }
 
     // MARK: - Fetchers
@@ -288,7 +300,12 @@ class JobManager: ObservableObject {
 
     // MARK: - Setup
     private func setupInitialState() {
-        Task { await loadStoredData() }
+        Task { [weak self] in
+            guard let self else { return }
+            await loadStoredData()
+            await cleanupOldJobs()
+            scheduleCleanup()
+        }
     }
 
     private func setupBindings() {
@@ -325,8 +342,15 @@ class JobManager: ObservableObject {
 
     func stopMonitoring() {
         isMonitoring = false
+        isSuspendedForSleep = false
+        awaitingWakeSession = false
+        fetchGeneration &+= 1
+        wakeRefreshTask?.cancel()
+        wakeRefreshTask = nil
         fetchTimers.values.forEach { $0.invalidate() }
         fetchTimers.removeAll()
+        customBoardTimer?.invalidate()
+        customBoardTimer = nil
         JobBoardMonitor.shared.stopMonitoring()
     }
 
@@ -345,7 +369,8 @@ class JobManager: ObservableObject {
     }
 
     func fetchAllJobs() async {
-        isLoading = true
+        guard let generation = beginFetch() else { return }
+        defer { endFetch() }
         lastError = nil
         newJobsCount = 0
         fetchStatistics = FetchStatistics()
@@ -353,7 +378,6 @@ class JobManager: ObservableObject {
         var allNewJobs: [Job] = []
         var sourceJobsMap: [JobSource: [Job]] = [:]
 
-        // Define sources with their configurations
         let sources: [(source: JobSource, name: String, enabled: Bool, statsPath: WritableKeyPath<FetchStatistics, Int>?)] = [
             (.microsoft, "Microsoft", enableMicrosoft, \.microsoftJobs),
             (.tiktok, "TikTok", enableTikTok, \.tiktokJobs),
@@ -365,6 +389,7 @@ class JobManager: ObservableObject {
         ]
 
         for config in sources {
+            guard isCurrentFetch(generation) else { return }
             let result = await fetchSourceJobs(
                 source: config.source,
                 name: config.name,
@@ -375,7 +400,6 @@ class JobManager: ObservableObject {
             allNewJobs.append(contentsOf: result.newJobs)
         }
 
-        // Custom Boards
         if enableCustomBoards {
             let tracker = FetchStatusTracker.shared
             tracker.startFetch(source: "Custom Boards")
@@ -384,6 +408,7 @@ class JobManager: ObservableObject {
                 titleFilter: jobTitleFilter,
                 locationFilter: locationFilterForFetch()
             )
+            guard isCurrentFetch(generation) else { return }
 
             let customJobsBySource = Dictionary(grouping: customJobs) { $0.source }
             for (source, jobs) in customJobsBySource {
@@ -398,9 +423,9 @@ class JobManager: ObservableObject {
             fetchStatistics.customBoardJobs = customJobs.count
             tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
 
-            if let boardError = await JobBoardMonitor.shared.lastError {
+            if let boardError = JobBoardMonitor.shared.lastError {
                 lastError = boardError
-            } else if lastError?.contains("Custom Boards") == true || lastError?.contains(":") == true {
+            } else if lastError?.hasPrefix("Custom Boards:") == true {
                 lastError = nil
             }
 
@@ -410,8 +435,8 @@ class JobManager: ObservableObject {
             }
         }
 
+        guard isCurrentFetch(generation) else { return }
         await processNewJobs(allNewJobs, sourceJobsMap: sourceJobsMap)
-        isLoading = false
     }
 
     private func fetchSourceJobs(
@@ -490,9 +515,26 @@ class JobManager: ObservableObject {
         appliedJobIds.contains(job.id)
     }
 
+    @discardableResult
+    func enrichDescription(for job: Job) async -> Bool {
+        guard let enriched = await descriptionService.enrich(job) else { return false }
+        let updatedJob = job.replacingDescription(with: enriched.text)
+        allJobs = allJobs.map { $0.id == job.id ? updatedJob : $0 }
+        jobsBySource = Dictionary(grouping: allJobs) { $0.source }
+        if selectedJob?.id == job.id {
+            selectedJob = updatedJob
+        }
+        do {
+            try await persistenceService.saveJobs(allJobs)
+        } catch {
+            lastError = "Could not save the enriched job description: \(error.localizedDescription)"
+        }
+        return true
+    }
+
     // MARK: - Private Methods
     private func startMonitoringSource(_ source: JobSource) {
-        guard isMonitoring else { return }
+        guard isMonitoring, !isSuspendedForSleep else { return }
         fetchTimers[source]?.invalidate()
         let interval = max(1.0, refreshInterval) * 60
 
@@ -506,16 +548,98 @@ class JobManager: ObservableObject {
         fetchTimers.removeValue(forKey: source)
     }
 
+    private func beginFetch() -> Int? {
+        guard !isFetchInProgress, !isClearingJobCache, !isSuspendedForSleep else { return nil }
+        isFetchInProgress = true
+        isLoading = true
+        return fetchGeneration
+    }
+
+    private func endFetch() {
+        isFetchInProgress = false
+        isLoading = false
+    }
+
+    private func isCurrentFetch(_ generation: Int) -> Bool {
+        generation == fetchGeneration && !isSuspendedForSleep && !isClearingJobCache
+    }
+
+    private func suspendForSleep() {
+        guard isMonitoring, !isSuspendedForSleep else { return }
+        isSuspendedForSleep = true
+        awaitingWakeSession = false
+        fetchGeneration &+= 1
+        wakeRefreshTask?.cancel()
+        fetchTimers.values.forEach { $0.invalidate() }
+        fetchTimers.removeAll()
+        customBoardTimer?.invalidate()
+        customBoardTimer = nil
+        JobBoardMonitor.shared.stopMonitoring()
+    }
+
+    private func resumeAfterWake() {
+        guard isMonitoring, isSuspendedForSleep else { return }
+        isSuspendedForSleep = false
+        awaitingWakeSession = true
+
+        for (enabled, source) in enabledSourceStates() where enabled {
+            startMonitoringSource(source)
+        }
+        updateCustomBoardMonitoring()
+
+        scheduleWakeRefresh(after: 60)
+    }
+
+    private func refreshAfterWakeSessionBecomesActive() {
+        guard awaitingWakeSession, isMonitoring, !isSuspendedForSleep else { return }
+        awaitingWakeSession = false
+        scheduleWakeRefresh(after: 15)
+    }
+
+    private func scheduleWakeRefresh(after delay: TimeInterval) {
+        wakeRefreshTask?.cancel()
+        wakeRefreshTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled, let self, self.isMonitoring, !self.isSuspendedForSleep else { return }
+            self.awaitingWakeSession = false
+            await self.fetchAllJobs()
+        }
+    }
+
     private func setupWakeNotification() {
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.suspendForSleep()
+            }
+        }
+
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            guard self.isMonitoring else { return }
-            print("Mac woke up - triggering job refresh")
-            Task { await self.fetchAllJobs() }
+            Task { @MainActor [weak self] in
+                self?.resumeAfterWake()
+            }
+        }
+
+        sessionActiveObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshAfterWakeSessionBecomesActive()
+            }
         }
     }
 
@@ -534,7 +658,9 @@ class JobManager: ObservableObject {
             return try await tiktokFetcher.fetchJobs(
                 titleKeywords: titleKeywords,
                 location: locationFilter,
-                maxPages: 350
+                // Deep pagination can outlive the shortest monitoring interval and
+                // keep the process busy long after the user expects a refresh to end.
+                maxPages: min(max(1, maxPagesToFetch), 25)
             )
         case .snap:
             return try await snapFetcher.fetchJobs(
@@ -575,12 +701,42 @@ class JobManager: ObservableObject {
     }
 
     private func fetchJobsFromSource(_ source: JobSource) async {
+        guard let generation = beginFetch() else { return }
+        defer { endFetch() }
         guard let jobs = try? await fetchFromSource(source) else { return }
+        guard isCurrentFetch(generation) else { return }
 
         jobsBySource[source] = jobs
         let newJobs = filterNewJobs(jobs)
         updateFetchStatistic(for: source, count: jobs.count)
 
+        await processNewJobs(newJobs, sourceJobsMap: jobsBySource)
+    }
+
+    private func fetchCustomBoardJobs() async {
+        guard let generation = beginFetch() else { return }
+        defer { endFetch() }
+
+        let tracker = FetchStatusTracker.shared
+        tracker.startFetch(source: "Custom Boards")
+        let customJobs = await JobBoardMonitor.shared.fetchAllBoardJobs(
+            titleFilter: jobTitleFilter,
+            locationFilter: locationFilterForFetch()
+        )
+        guard isCurrentFetch(generation) else { return }
+
+        for (source, jobs) in Dictionary(grouping: customJobs, by: \.source) {
+            jobsBySource[source] = jobs
+        }
+
+        let newJobs = filterNewJobs(customJobs)
+        fetchStatistics.customBoardJobs = customJobs.count
+        if let boardError = JobBoardMonitor.shared.lastError {
+            lastError = boardError
+            tracker.failedFetch(source: "Custom Boards", error: FetchError.apiError(boardError))
+        } else {
+            tracker.successFetch(source: "Custom Boards", jobCount: customJobs.count)
+        }
         await processNewJobs(newJobs, sourceJobsMap: jobsBySource)
     }
 
@@ -591,11 +747,9 @@ class JobManager: ObservableObject {
     private func processNewJobs(_ newJobs: [Job], sourceJobsMap: [JobSource: [Job]]) async {
         newJobs.forEach { storedJobIds.insert($0.id) }
 
-        // Start with existing jobs and merge new fetch results
         var seenIds = Set<String>()
         var uniqueJobs: [Job] = []
 
-        // First add all jobs from the current fetch (they have updated data)
         for jobs in sourceJobsMap.values {
             for job in jobs where !seenIds.contains(job.id) {
                 uniqueJobs.append(job)
@@ -603,7 +757,6 @@ class JobManager: ObservableObject {
             }
         }
 
-        // Then add existing jobs that weren't in this fetch (preserves jobs from disabled sources)
         for job in allJobs where !seenIds.contains(job.id) {
             uniqueJobs.append(job)
             seenIds.insert(job.id)
@@ -620,8 +773,12 @@ class JobManager: ObservableObject {
             await sendNotificationsForNewJobs(newJobs)
         }
 
-        try? await persistenceService.saveJobs(allJobs)
-        try? await persistenceService.saveStoredJobIds(storedJobIds)
+        do {
+            try await persistenceService.saveJobs(allJobs)
+            try await persistenceService.saveStoredJobIds(storedJobIds)
+        } catch {
+            lastError = "Could not save job data: \(error.localizedDescription)"
+        }
         loadingProgress = ""
     }
 
@@ -692,7 +849,7 @@ class JobManager: ObservableObject {
     }
 
     private func rescheduleActiveTimers() {
-        guard isMonitoring else { return }
+        guard isMonitoring, !isSuspendedForSleep else { return }
         let activeSources = Array(fetchTimers.keys)
         for source in activeSources {
             startMonitoringSource(source)
@@ -701,11 +858,23 @@ class JobManager: ObservableObject {
     }
 
     private func updateCustomBoardMonitoring() {
-        guard isMonitoring else { return }
+        guard isMonitoring, !isSuspendedForSleep else { return }
         if enableCustomBoards {
-            JobBoardMonitor.shared.startMonitoring(interval: max(1.0, refreshInterval) * 60)
+            startCustomBoardTimer()
         } else {
+            customBoardTimer?.invalidate()
+            customBoardTimer = nil
             JobBoardMonitor.shared.stopMonitoring()
+        }
+    }
+
+    private func startCustomBoardTimer() {
+        customBoardTimer?.invalidate()
+        customBoardTimer = Timer.scheduledTimer(
+            withTimeInterval: max(1.0, refreshInterval) * 60,
+            repeats: true
+        ) { [weak self] _ in
+            Task { await self?.fetchCustomBoardJobs() }
         }
     }
 
@@ -771,6 +940,31 @@ struct FetchStatistics {
 
 // MARK: - Cleanup
 extension JobManager {
+    func clearJobCache() async throws -> CacheCleanupResult {
+        guard !isFetchInProgress else {
+            throw FetchError.apiError("Wait for the current refresh to finish before clearing cached data.")
+        }
+        guard !isClearingJobCache else {
+            throw FetchError.apiError("Cache cleanup is already in progress.")
+        }
+
+        isClearingJobCache = true
+        defer { isClearingJobCache = false }
+        let result = try await persistenceService.clearJobCache()
+        await JobTracker.shared.clear()
+
+        allJobs = []
+        storedJobIds = []
+        notifiedJobIds = []
+        jobsBySource = [:]
+        selectedJob = nil
+        newJobsCount = 0
+        fetchStatistics = FetchStatistics()
+        loadingProgress = ""
+
+        return result
+    }
+
     func cleanupOldJobs() async {
         let cutoffDate = Date().addingTimeInterval(-7 * 24 * 3600)
 
@@ -782,16 +976,20 @@ extension JobManager {
         }
 
         storedJobIds = storedJobIds.intersection(Set(allJobs.map { $0.id }))
+        notifiedJobIds = notifiedJobIds.intersection(Set(allJobs.map { $0.id }))
+        jobsBySource = Dictionary(grouping: allJobs) { $0.source }
 
         try? await persistenceService.saveJobs(allJobs)
         try? await persistenceService.saveStoredJobIds(storedJobIds)
     }
 
     func scheduleCleanup() {
-        Task {
-            while true {
-                await cleanupOldJobs()
+        cleanupTask?.cancel()
+        cleanupTask = Task { [weak self] in
+            while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 24 * 3600 * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.cleanupOldJobs()
             }
         }
     }
@@ -800,14 +998,11 @@ extension JobManager {
 // MARK: - Incremental Loading
 extension JobManager {
     func loadJobsIncremental() async {
-        isLoading = true
-
         if let persistedJobs = try? await persistenceService.loadJobs() {
             allJobs = persistedJobs
             loadingProgress = "Loaded \(persistedJobs.count) cached jobs"
         }
 
         await fetchAllJobs()
-        isLoading = false
     }
 }

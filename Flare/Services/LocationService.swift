@@ -60,7 +60,6 @@ struct LocationService {
         var countries = Set<String>()
         
         let countryMappings: [String: String] = [
-            // US, thanks claude
             "usa": "United States",
             "us": "United States",
             "united states": "United States",

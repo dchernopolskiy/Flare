@@ -2,7 +2,6 @@
 //  JobTrackingService.swift
 //  Flare
 //
-//  Created by Claude on 12/2/25.
 //
 
 import Foundation
@@ -55,7 +54,7 @@ actor JobTrackingService {
 
             let data = try JSONEncoder().encode(recentData)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
+            try data.write(to: url, options: .atomic)
         } catch {
             print("[\(source)] Failed to save job tracking data: \(error)")
         }

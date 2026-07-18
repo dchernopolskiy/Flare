@@ -33,10 +33,8 @@ struct JobRow: View {
     
     var body: some View {
         ZStack {
-            // Background with swipe indicators - only show during swipe
             if dragOffset.width != 0 {
                 HStack(spacing: 0) {
-                    // Left swipe indicator (Apply)
                     Rectangle()
                         .fill(Color.green.opacity(0.3))
                         .overlay(
@@ -49,7 +47,6 @@ struct JobRow: View {
                             .padding(.horizontal)
                         )
                     
-                    // Right swipe indicator (Dismiss)
                     Rectangle()
                         .fill(Color.red.opacity(0.3))
                         .overlay(
@@ -64,29 +61,25 @@ struct JobRow: View {
                 }
             }
             
-            // Main content
             Button(action: { toggleSelection() }) {
                 HStack(alignment: .top, spacing: 12) {
-                    // Source Icon with Animation
                     ZStack {
-                        Circle()
-                            .fill(job.source.color.opacity(0.1))
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(job.source.color)
                             .frame(width: 36, height: 36)
                         
                         Image(systemName: job.source.icon)
                             .font(.title3)
-                            .foregroundColor(job.source.color)
+                            .foregroundColor(job.source.flareMarkForeground)
                             .scaleEffect(isHovered ? 1.1 : 1.0)
                             .animation(.spring(response: 0.3), value: isHovered)
                     }
                     
-                    // Job Info
                     VStack(alignment: .leading, spacing: 6) {
-                        // Title with badges
                         HStack(alignment: .center, spacing: 6) {
                             Text(job.title)
-                                .font(.headline)
-                                .foregroundColor(.primary)
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundColor(FlareVisual.ink)
                                 .lineLimit(1)
                             
                             if job.isBumpedRecently {
@@ -109,22 +102,27 @@ struct JobRow: View {
                             Spacer()
                         }
                         
-                        // Location and Time
                         HStack(spacing: 12) {
                             Label(job.location, systemImage: "location")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(FlareVisual.fadedInk)
                             
                             Spacer()
                             
-                            // Source badge
-                            Text(job.source.rawValue)
-                                .font(.caption2)
-                                .foregroundColor(job.source.color)
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(job.source.color)
+                                    .frame(width: 6, height: 6)
+                                Text(job.source.rawValue)
+                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .tracking(0.4)
+                            }
+                                .foregroundColor(FlareVisual.soot)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(job.source.color.opacity(0.15))
-                                .cornerRadius(4)
+                                .background(FlareVisual.paper.opacity(0.78))
+                                .overlay(Capsule().stroke(job.source.color.opacity(0.48), lineWidth: 1))
+                                .clipShape(Capsule())
                             
                             HStack(spacing: 4) {
                                 Image(systemName: "clock")
@@ -132,13 +130,14 @@ struct JobRow: View {
                                 Text(relativeTime(from: job.postingDate ?? job.firstSeenDate))
                                     .font(.caption)
                             }
-                            .foregroundColor(.secondary)
+                            .foregroundColor(FlareVisual.fadedInk)
                         }
                     }
                     
                     Spacer()
                 }
-                .padding()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
                 .background(backgroundView)
                 .contentShape(Rectangle())
             }
@@ -157,11 +156,9 @@ struct JobRow: View {
                 .onEnded { value in
                     withAnimation(.spring()) {
                         if value.translation.width > 50 {
-                            // Swipe right - Apply
                             jobManager.toggleAppliedStatus(for: job)
                             HapticFeedback.success()
                         } else if value.translation.width < -50 {
-                            // Swipe left - Dismiss (could hide or mark as not interested)
                             HapticFeedback.warning()
                         }
                         dragOffset = .zero
@@ -181,22 +178,22 @@ struct JobRow: View {
     private var backgroundView: some View {
         ZStack {
             if isSelected {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.accentColor.opacity(0.1))
+                RoundedRectangle(cornerRadius: FlareVisual.corner, style: .continuous)
+                    .fill(FlareVisual.ember.opacity(0.26))
             } else if isApplied {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.green.opacity(0.05))
+                RoundedRectangle(cornerRadius: FlareVisual.corner, style: .continuous)
+                    .fill(FlareVisual.moss.opacity(0.14))
             } else if isStarred {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.yellow.opacity(0.05))
+                RoundedRectangle(cornerRadius: FlareVisual.corner, style: .continuous)
+                    .fill(FlareVisual.brass.opacity(0.16))
             } else if job.isRecent {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.orange.opacity(0.03))
+                RoundedRectangle(cornerRadius: FlareVisual.corner, style: .continuous)
+                    .fill(FlareVisual.paper.opacity(0.72))
             } else if isHovered {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.05))
+                RoundedRectangle(cornerRadius: FlareVisual.corner, style: .continuous)
+                    .fill(FlareVisual.paper.opacity(0.86))
             } else {
-                Color.clear
+                FlareVisual.paper.opacity(0.58)
             }
         }
     }
@@ -219,8 +216,6 @@ struct JobRow: View {
         pasteboard.clearContents()
         pasteboard.setString(job.url, forType: .string)
         
-        // Show notification (optional - this will need implementation if toast system exists)
-        // showToast("Link copied!")
     }
     
     private func relativeTime(from date: Date) -> String {
@@ -266,11 +261,10 @@ struct Badge: View {
     var body: some View {
         Text("NEW")
             .font(.system(size: 8, weight: .bold))
-            .foregroundColor(.white)
+            .foregroundColor(FlareVisual.paper)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .background(Color.orange)
-            .cornerRadius(4)
+            .background(FlareVisual.ember, in: Capsule())
     }
 }
 
@@ -278,11 +272,10 @@ struct AppliedBadge: View {
     var body: some View {
         Text("APPLIED")
             .font(.system(size: 8, weight: .bold))
-            .foregroundColor(.white)
+            .foregroundColor(FlareVisual.paper)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .background(Color.green)
-            .cornerRadius(4)
+            .background(FlareVisual.moss, in: Capsule())
     }
 }
 
@@ -290,11 +283,10 @@ struct RefreshedBadge: View {
     var body: some View {
         Text("REPOSTED")
             .font(.system(size: 8, weight: .bold))
-            .foregroundColor(.white)
+            .foregroundColor(FlareVisual.paper)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .background(Color.blue)
-            .cornerRadius(4)
+            .background(FlareVisual.soot, in: Capsule())
     }
 }
 

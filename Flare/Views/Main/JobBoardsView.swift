@@ -19,44 +19,58 @@ struct JobBoardsView: View {
     @State private var importResult: String?
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Header
-            Text("Job Boards")
-                .font(.title2)
-                .fontWeight(.semibold)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Job Boards")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(FlareVisual.ink)
+                    Text("Add company career pages, confirm the connection, then keep them in one place.")
+                        .font(.callout)
+                        .foregroundColor(FlareVisual.fadedInk)
+                }
+
+                Spacer()
+
+                Text("\(monitor.boardConfigs.count) saved")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(FlareVisual.soot)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(.quaternary, in: Capsule())
+                    .accessibilityLabel("\(monitor.boardConfigs.count) saved job boards")
+            }
             
             Divider()
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    // Import/Export Section
                     ImportExportSection(
                         showImportDialog: $showImportDialog,
                         showExportDialog: $showExportDialog,
                         importResult: $importResult
                     )
                     
-                    // Add Board Section
                     AddBoardSection(
                         newBoardName: $newBoardName,
                         newBoardURL: $newBoardURL,
                         testingBoardId: $testingBoardId
                     )
                     
-                    // Configured Boards List
                     if !monitor.boardConfigs.isEmpty {
                         ConfiguredBoardsSection(testingBoardId: $testingBoardId)
                     } else {
                         EmptyBoardsView()
                     }
                     
-                    // Supported Platforms Info
                     SupportedPlatformsSection()
                 }
                 .padding()
             }
         }
         .padding()
+        .preferredColorScheme(.light)
         .fileImporter(
             isPresented: $showImportDialog,
             allowedContentTypes: [.plainText],
@@ -124,9 +138,14 @@ struct ImportExportSection: View {
     @Binding var importResult: String?
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Import / Export", systemImage: "arrow.up.arrow.down.circle")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Move boards in or out", systemImage: "arrow.up.arrow.down.circle")
+                    .font(.headline)
+                Text("Use a text export to move your saved company sources between Macs.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             
             HStack(spacing: 12) {
                 Button(action: { showImportDialog = true }) {
@@ -138,6 +157,7 @@ struct ImportExportSection: View {
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.bordered)
+                .accessibilityHint("Choose a job board export file to add its boards")
                 
                 Button(action: { showExportDialog = true }) {
                     HStack {
@@ -149,6 +169,7 @@ struct ImportExportSection: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(monitor.boardConfigs.isEmpty)
+                .accessibilityHint("Save your current job board list as a text file")
             }
             
             if let result = importResult {
@@ -166,12 +187,14 @@ struct ImportExportSection: View {
                 )
             }
             
-            Text("Export format: URL | Name | Enabled")
+            Text("Format: URL | Name | Enabled")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(FlareVisual.paper)
+        .foregroundStyle(FlareVisual.soot)
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(FlareVisual.ink.opacity(0.16), lineWidth: 1))
         .cornerRadius(8)
     }
 }
@@ -185,6 +208,7 @@ struct AddBoardSection: View {
     @State private var detectionPreview: JobBoardMonitor.DetectionPreview?
     @State private var detectionFailed = false
     @State private var detectionError: String?
+    @FocusState private var focusedField: Field?
     @ObservedObject private var monitor = JobBoardMonitor.shared
     @EnvironmentObject var jobManager: JobManager
 
@@ -193,21 +217,59 @@ struct AddBoardSection: View {
         return JobBoardConfig.normalizedURLString(newBoardURL) != nil
     }
 
+    private var isDuplicateURL: Bool {
+        guard let normalizedURL = JobBoardConfig.normalizedURLString(newBoardURL) else { return false }
+        return monitor.boardConfigs.contains { $0.url == normalizedURL }
+    }
+
+    private enum Field: Hashable {
+        case name
+        case url
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Add Job Board", systemImage: "plus.circle.fill")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Add a company board", systemImage: "plus.circle.fill")
+                    .font(.headline)
+                Text("Paste the public careers page. Flare will find the best source and show the jobs it can reach before saving anything.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
 
-            TextField("Board Name (e.g., GitLab, Stripe)", text: $newBoardName)
-                .textFieldStyle(.roundedBorder)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("1. Identify the company")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
 
-            TextField("Board URL (job listing page)", text: $newBoardURL)
-                .textFieldStyle(.roundedBorder)
+                TextField("Company name (optional)", text: $newBoardName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .name)
+                    .accessibilityLabel("Company name, optional")
+                    .accessibilityHint("Flare can suggest a name from the board URL")
+
+                TextField("Careers or job board URL", text: $newBoardURL)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .url)
+                    .accessibilityLabel("Careers or job board URL")
+                    .accessibilityHint("Enter the public job listing page for the company")
+                    .onSubmit(startDetection)
                 .onChange(of: newBoardURL) { _, _ in
                     detectionPreview = nil
                     detectionFailed = false
                     detectionError = nil
                 }
+
+                if !newBoardURL.isEmpty && !isValidURL {
+                    Label("Enter a complete web address, such as https://company.com/careers.", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else if isDuplicateURL {
+                    Label("This board is already saved.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
 
             if monitor.detectionInProgress {
                 DetectionProgressView(status: monitor.detectionStatus)
@@ -217,10 +279,6 @@ struct AddBoardSection: View {
                 DetectionFailedView(errorMessage: detectionError)
             }
 
-            Text("Supported: Greenhouse, Ashbyhq, Lever, Workday, and custom sites with AI parsing")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
             Button(action: startDetection) {
                 HStack {
                     if monitor.detectionInProgress {
@@ -229,28 +287,34 @@ struct AddBoardSection: View {
                         Text("Detecting...")
                     } else {
                         Image(systemName: "magnifyingglass.circle.fill")
-                        Text("Detect & Preview")
+                        Text("2. Detect and preview jobs")
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!isValidURL || monitor.detectionInProgress)
+            .disabled(!isValidURL || isDuplicateURL || monitor.detectionInProgress)
+            .accessibilityHint("Tests the careers page before adding it to your saved boards")
+
+            Text("Works with Greenhouse, Ashby, Lever, Workday, and custom sites when AI parsing is enabled.")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
             if !monitor.testResults.isEmpty {
                 TestResultsView()
             }
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(8)
+        .background(FlareVisual.paper, in: RoundedRectangle(cornerRadius: 12))
+        .foregroundStyle(FlareVisual.soot)
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(FlareVisual.ink.opacity(0.16), lineWidth: 1))
         .sheet(item: $detectionPreview) { preview in
             DetectionConfirmationSheet(
                 boardName: $newBoardName,
                 boardURL: newBoardURL,
                 preview: preview,
-                onConfirm: { addBoard(with: preview) },
+                onConfirm: { [boardURL = newBoardURL] in addBoard(with: preview, boardURL: boardURL) },
                 onCancel: { detectionPreview = nil }
             )
         }
@@ -260,21 +324,22 @@ struct AddBoardSection: View {
         guard let normalizedURL = JobBoardConfig.normalizedURLString(newBoardURL),
               let url = URL(string: normalizedURL) else { return }
 
-        // Reset state before starting
         detectionFailed = false
         detectionError = nil
 
+        let requestedURL = normalizedURL
         Task {
             if let preview = await monitor.detectAndPreview(url: url) {
                 await MainActor.run {
+                    guard JobBoardConfig.normalizedURLString(newBoardURL) == requestedURL else { return }
                     if newBoardName.isEmpty {
                         newBoardName = extractCompanyName(from: newBoardURL)
                     }
                     detectionPreview = preview
                 }
             } else {
-                // Detection failed - show error to user
                 await MainActor.run {
+                    guard JobBoardConfig.normalizedURLString(newBoardURL) == requestedURL else { return }
                     detectionFailed = true
                     let aiEnabled = UserDefaults.standard.bool(forKey: "enableAIParser")
                     if !aiEnabled {
@@ -287,9 +352,9 @@ struct AddBoardSection: View {
         }
     }
 
-    private func addBoard(with preview: JobBoardMonitor.DetectionPreview) {
+    private func addBoard(with preview: JobBoardMonitor.DetectionPreview, boardURL: String) {
         let finalUrl = preview.queryURL
-        guard let normalizedBoardURL = JobBoardConfig.normalizedURLString(newBoardURL) else { return }
+        guard let normalizedBoardURL = JobBoardConfig.normalizedURLString(boardURL) else { return }
 
         guard var config = JobBoardConfig(
             name: newBoardName.isEmpty ? extractCompanyName(from: finalUrl) : newBoardName,
@@ -305,6 +370,7 @@ struct AddBoardSection: View {
         newBoardName = ""
         newBoardURL = ""
         detectionPreview = nil
+        focusedField = .url
     }
 
     private func extractCompanyName(from urlString: String) -> String {
@@ -338,6 +404,8 @@ struct DetectionProgressView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.blue.opacity(0.1))
         .cornerRadius(8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Detecting job board. \(status)")
     }
 }
 
@@ -370,6 +438,7 @@ struct DetectionFailedView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.orange.opacity(0.1))
         .cornerRadius(8)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -384,16 +453,22 @@ struct DetectionConfirmationSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Add Job Board?")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Ready to monitor")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Review the connection, then save this board.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                }
                 Spacer()
                 Button(action: onCancel) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close board preview")
             }
             .padding()
 
@@ -409,7 +484,7 @@ struct DetectionConfirmationSheet: View {
                         Text("Found \(preview.jobCount) jobs")
                             .font(.title3)
                             .fontWeight(.semibold)
-                        Text("via \(preview.parsingMethod.rawValue)")
+                        Text("Flare can reach this board via \(preview.parsingMethod.rawValue).")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -419,29 +494,51 @@ struct DetectionConfirmationSheet: View {
                 .background(Color.green.opacity(0.1))
                 .cornerRadius(8)
 
+                if let evidence = preview.evidenceSummary {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("WHY THIS LOOKS RIGHT")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .tracking(0.9)
+                            .foregroundStyle(FlareVisual.fadedInk)
+                        Text(evidence)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FlareVisual.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+
                 VStack(alignment: .leading, spacing: 12) {
-                    TextField("Board Name", text: $boardName)
+                    Text("Board name")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+                    TextField("Board name", text: $boardName)
                         .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Board name")
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("Original URL", systemImage: "link")
+                        Label("Careers page", systemImage: "link")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(boardURL)
                             .font(.caption)
                             .foregroundColor(.primary)
-                            .lineLimit(2)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
                     }
 
                     if preview.queryURL != boardURL {
                         VStack(alignment: .leading, spacing: 6) {
-                            Label("Query URL", systemImage: preview.parsingMethod.icon)
+                            Label("Connection Flare will use", systemImage: preview.parsingMethod.icon)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             Text(preview.queryURL)
                                 .font(.caption)
                                 .foregroundColor(.blue)
-                                .lineLimit(2)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
                         }
                     }
 
@@ -480,6 +577,7 @@ struct DetectionConfirmationSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return)
+                .accessibilityHint("Saves this verified board and begins monitoring it")
             }
             .padding()
         }
@@ -509,7 +607,7 @@ struct TestResultsView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                    .background(FlareVisual.paperShadow.opacity(0.45))
                     .cornerRadius(4)
                 }
             }
@@ -531,12 +629,13 @@ struct ConfiguredBoardsSection: View {
             HStack {
                 Label("Configured Boards (\(monitor.boardConfigs.count))", systemImage: "list.bullet")
                     .font(.headline)
+                    .foregroundStyle(FlareVisual.ink)
                 
                 Spacer()
                 
                 Text("\(monitor.boardConfigs.filter { $0.isEnabled }.count) enabled")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(FlareVisual.fadedInk)
             }
             
             ForEach(monitor.boardConfigs) { config in
@@ -576,6 +675,7 @@ struct SupportedPlatformsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Platform Support", systemImage: "info.circle")
                 .font(.headline)
+                .foregroundStyle(FlareVisual.ink)
             
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(JobSource.allCases, id: \.self) { source in
@@ -601,7 +701,8 @@ struct SupportedPlatformsSection: View {
                 }
             }
             .padding()
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+            .background(FlareVisual.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(FlareVisual.ink.opacity(0.16), lineWidth: 1))
             .cornerRadius(6)
         }
     }

@@ -18,8 +18,12 @@ struct DetectedAPICall {
 
 @MainActor
 class WebKitRenderer: NSObject, WKNavigationDelegate {
+    private static let maxCapturedCalls = 12
+    private static let maxRequestBodyCharacters = 16_384
+    private static let maxResponseCharacters = 131_072
+    private static let maxTotalCapturedCharacters = 524_288
+
     private var webView: WKWebView?
-    private var continuation: CheckedContinuation<String, Error>?
     private var renderContinuation: CheckedContinuation<RenderResult, Error>?
     private var loadTimeout: Task<Void, Never>?
 
@@ -29,30 +33,93 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
     }
 
     func renderWithAPIDetection(from url: URL, waitTime: TimeInterval = 5.0) async throws -> RenderResult {
-        return try await withCheckedThrowingContinuation { continuation in
-            self.renderContinuation = continuation
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                // A renderer is single-use while a navigation is active. Finishing the
+                // previous request keeps a reused instance from leaking its web view or
+                // leaving its caller suspended forever.
+                finish(throwing: CancellationError())
+                renderContinuation = continuation
 
-            // Create headless WebView with custom config
-            let config = WKWebViewConfiguration()
-            config.websiteDataStore = .nonPersistent()
-            config.mediaTypesRequiringUserActionForPlayback = .all
+                guard !Task.isCancelled else {
+                    finish(throwing: CancellationError())
+                    return
+                }
 
-            let interceptScript = """
+                // Create headless WebView with custom config
+                let config = WKWebViewConfiguration()
+                config.websiteDataStore = .nonPersistent()
+                config.mediaTypesRequiringUserActionForPlayback = .all
+
+                let interceptScript = """
             (function() {
                 window.__apiCalls = [];
+                let capturedCharacters = 0;
+                const maxCalls = \(Self.maxCapturedCalls);
+                const maxBodyCharacters = \(Self.maxRequestBodyCharacters);
+                const maxResponseCharacters = \(Self.maxResponseCharacters);
+                const maxTotalCapturedCharacters = \(Self.maxTotalCapturedCharacters);
+                const jobPatterns = ['job', 'career', 'position', 'opening', 'requisition', 'posting', 'vacancy', 'opportunity', 'search', 'api', 'graphql', 'hiring', 'talent', 'recruit', 'apply', 'listing', 'role', 'employment', 'work', 'team'];
+                const excludedPatterns = ['analytics', 'tracking', 'telemetry', 'beacon', 'pixel', 'facebook', 'google-analytics', 'gtag', 'hotjar', 'segment'];
+
+                function isCandidateURL(value) {
+                    const url = String(value || '').toLowerCase();
+                    return jobPatterns.some((pattern) => url.includes(pattern)) &&
+                        !excludedPatterns.some((pattern) => url.includes(pattern));
+                }
+
+                function truncate(value, maximum) {
+                    const text = String(value || '');
+                    return text.length > maximum ? text.slice(0, maximum) : text;
+                }
+
                 function normalizeHeaders(headers) {
                     const result = {};
                     if (!headers) { return result; }
                     try {
                         if (headers instanceof Headers) {
-                            headers.forEach((value, key) => { result[key] = String(value); });
+                            let count = 0;
+                            headers.forEach((value, key) => {
+                                if (count++ < 30) { result[truncate(key, 128)] = truncate(value, 1024); }
+                            });
                         } else if (Array.isArray(headers)) {
-                            headers.forEach(([key, value]) => { result[String(key)] = String(value); });
+                            headers.slice(0, 30).forEach(([key, value]) => { result[truncate(key, 128)] = truncate(value, 1024); });
                         } else {
-                            Object.keys(headers).forEach((key) => { result[key] = String(headers[key]); });
+                            Object.keys(headers).slice(0, 30).forEach((key) => { result[truncate(key, 128)] = truncate(headers[key], 1024); });
                         }
                     } catch (e) {}
                     return result;
+                }
+
+                function addCall(url, method, body, headers, type) {
+                    if (!isCandidateURL(url) || window.__apiCalls.length >= maxCalls) { return null; }
+                    const capturedURL = truncate(url, 4096);
+                    const capturedMethod = truncate(method || 'GET', 32);
+                    const requestBody = truncate(body, maxBodyCharacters);
+                    let headerCharacters = 0;
+                    try { headerCharacters = JSON.stringify(headers).length; } catch (e) {}
+                    const metadataCharacters = capturedURL.length + capturedMethod.length + requestBody.length + headerCharacters + String(type || '').length;
+                    if (capturedCharacters + metadataCharacters >= maxTotalCapturedCharacters) { return null; }
+                    capturedCharacters += metadataCharacters;
+                    const call = {
+                        url: capturedURL,
+                        method: capturedMethod,
+                        body: requestBody,
+                        headers: headers,
+                        type: type,
+                        response: null,
+                        status: null
+                    };
+                    window.__apiCalls.push(call);
+                    return call;
+                }
+
+                function captureResponse(call, value) {
+                    if (!call || capturedCharacters >= maxTotalCapturedCharacters) { return; }
+                    const remaining = maxTotalCapturedCharacters - capturedCharacters;
+                    const response = truncate(value, Math.min(maxResponseCharacters, remaining));
+                    capturedCharacters += response.length;
+                    call.response = response;
                 }
 
                 // Intercept fetch
@@ -76,23 +143,15 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                     }
 
                     const headers = normalizeHeaders(options.headers || (args[0] && args[0].headers));
-                    const call = {
-                        url: url,
-                        method: method,
-                        body: body,
-                        headers: headers,
-                        type: 'fetch',
-                        response: null,
-                        status: null
-                    };
-                    window.__apiCalls.push(call);
+                    const call = addCall(url, method, body, headers, 'fetch');
 
                     return originalFetch.apply(this, args).then((response) => {
+                        if (!call) { return response; }
                         call.status = response.status;
                         const contentType = response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '';
                         if (contentType.includes('json') || contentType.includes('text')) {
                             response.clone().text().then((text) => {
-                                call.response = text.slice(0, 1000000);
+                                captureResponse(call, text);
                             }).catch(() => {});
                         }
                         return response;
@@ -118,23 +177,16 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
                 const originalXHRSend = XMLHttpRequest.prototype.send;
                 XMLHttpRequest.prototype.send = function(body) {
                     if (this.__url) {
-                        const call = {
-                            url: this.__url,
-                            method: this.__method || 'GET',
-                            body: body || null,
-                            headers: this.__headers || {},
-                            type: 'xhr',
-                            response: null,
-                            status: null
-                        };
-                        this.addEventListener('loadend', function() {
-                            call.status = this.status;
-                            const contentType = this.getResponseHeader('content-type') || '';
-                            if (contentType.includes('json') || contentType.includes('text')) {
-                                call.response = String(this.responseText || '').slice(0, 1000000);
-                            }
-                        });
-                        window.__apiCalls.push(call);
+                        const call = addCall(this.__url, this.__method || 'GET', body || null, this.__headers || {}, 'xhr');
+                        if (call) {
+                            this.addEventListener('loadend', function() {
+                                call.status = this.status;
+                                const contentType = this.getResponseHeader('content-type') || '';
+                                if (contentType.includes('json') || contentType.includes('text')) {
+                                    captureResponse(call, this.responseText || '');
+                                }
+                            });
+                        }
                     }
                     return originalXHRSend.apply(this, arguments);
                 };
@@ -143,25 +195,34 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
             })();
             """
 
-            let userScript = WKUserScript(source: interceptScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-            config.userContentController.addUserScript(userScript)
+                let userScript = WKUserScript(source: interceptScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+                config.userContentController.addUserScript(userScript)
 
-            webView = WKWebView(frame: .zero, configuration: config)
-            webView?.navigationDelegate = self
+                webView = WKWebView(frame: .zero, configuration: config)
+                webView?.navigationDelegate = self
 
-            print("[WebKitRenderer] Loading with API interception: \(url.absoluteString)")
+                print("[WebKitRenderer] Loading with API interception: \(url.absoluteString)")
 
-            let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
-            webView?.load(request)
+                let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+                webView?.load(request)
 
-            loadTimeout = Task {
-                try? await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
-                if self.renderContinuation != nil {
+                loadTimeout = Task { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
+                    } catch {
+                        return
+                    }
+
+                    guard let self, self.renderContinuation != nil else { return }
                     print("[WebKitRenderer] Timeout reached, extracting data...")
                     await self.extractRenderResult()
                 }
             }
-        }
+        }, onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finish(throwing: CancellationError())
+            }
+        })
     }
 
     func renderHTML(from url: URL, waitTime: TimeInterval = 5.0) async throws -> String {
@@ -178,29 +239,22 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
             try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
 
             print("[WebKitRenderer] Extracting data...")
-            if self.renderContinuation != nil {
-                await self.extractRenderResult()
-            } else {
-                await self.extractHTML()
-            }
+            guard !Task.isCancelled, self.renderContinuation != nil else { return }
+            await self.extractRenderResult()
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             print("[WebKitRenderer] Navigation failed: \(error.localizedDescription)")
-            continuation?.resume(throwing: error)
-            continuation = nil
-            loadTimeout?.cancel()
+            finish(throwing: error)
         }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in
             print("[WebKitRenderer] Provisional navigation failed: \(error.localizedDescription)")
-            continuation?.resume(throwing: error)
-            continuation = nil
-            loadTimeout?.cancel()
+            finish(throwing: error)
         }
     }
 
@@ -303,38 +357,37 @@ class WebKitRenderer: NSObject, WKNavigationDelegate {
             print("[WebKitRenderer] Detected \(detectedCalls.count) API calls")
 
             let result = RenderResult(html: html, detectedAPICalls: detectedCalls)
-
-            self.renderContinuation?.resume(returning: result)
-            self.renderContinuation = nil
-            loadTimeout?.cancel()
-            self.webView = nil
+            finish(returning: result)
 
         } catch {
             print("[WebKitRenderer] Failed to extract data: \(error.localizedDescription)")
-            continuation.resume(throwing: error)
-            self.renderContinuation = nil
-            loadTimeout?.cancel()
+            finish(throwing: error)
         }
     }
 
-    private func extractHTML() async {
-        guard let webView = webView, let continuation = continuation else { return }
+    private func finish(returning result: RenderResult) {
+        guard let continuation = renderContinuation else { return }
+        renderContinuation = nil
+        tearDownWebView()
+        continuation.resume(returning: result)
+    }
 
-        do {
-            let html = try await webView.evaluateJavaScript("document.documentElement.outerHTML") as? String ?? ""
-
-            print("[WebKitRenderer] Extracted \(html.count) characters of rendered HTML")
-
-            self.continuation?.resume(returning: html)
-            self.continuation = nil
-            loadTimeout?.cancel()
-            self.webView = nil
-
-        } catch {
-            print("[WebKitRenderer] Failed to extract HTML: \(error.localizedDescription)")
-            continuation.resume(throwing: error)
-            self.continuation = nil
-            loadTimeout?.cancel()
+    private func finish(throwing error: Error) {
+        guard let continuation = renderContinuation else {
+            tearDownWebView()
+            return
         }
+        renderContinuation = nil
+        tearDownWebView()
+        continuation.resume(throwing: error)
+    }
+
+    private func tearDownWebView() {
+        loadTimeout?.cancel()
+        loadTimeout = nil
+        webView?.stopLoading()
+        webView?.navigationDelegate = nil
+        webView?.configuration.userContentController.removeAllUserScripts()
+        webView = nil
     }
 }
